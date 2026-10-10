@@ -34,7 +34,6 @@ pub const DEFAULT_USER: &str = "vmuc";
 pub const DEFAULT_UID: u32 = 1000;
 pub const DEFAULT_SHELL: &str = "/bin/bash";
 pub const DEFAULT_TIMEZONE: &str = "UTC";
-pub const DEFAULT_REPORT_DELAY_MS: u32 = 500;
 pub const DEFAULT_MIN_AVAILABLE: ByteSize = ByteSize::from_mib(256);
 pub const DEFAULT_DATA_OWNER: &str = "root:root";
 pub const DEFAULT_DATA_PERMISSIONS: &str = "0644";
@@ -311,7 +310,6 @@ pub struct ResolvedUser {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResolvedMemoryPolicy {
     pub pressure_balloon: bool,
-    pub report_delay_ms: u32,
     pub min_available: ByteSize,
 }
 
@@ -491,9 +489,6 @@ pub fn fill_defaults(
             pressure_balloon: l
                 .pick(|c| c.memory_policy.pressure_balloon.as_ref())
                 .unwrap_or(false),
-            report_delay_ms: l
-                .pick(|c| c.memory_policy.report_delay_ms.as_ref())
-                .unwrap_or(DEFAULT_REPORT_DELAY_MS),
             min_available: l
                 .pick(|c| c.memory_policy.min_available.as_ref())
                 .unwrap_or(DEFAULT_MIN_AVAILABLE),
@@ -793,7 +788,6 @@ mod tests {
         assert_eq!(r.network.mode, NetworkMode::Shared);
         assert_eq!(r.network.mac_address, mac_address_for("demo"));
         assert!(!r.memory_policy.pressure_balloon);
-        assert_eq!(r.memory_policy.report_delay_ms, DEFAULT_REPORT_DELAY_MS);
         assert_eq!(r.memory_policy.min_available, DEFAULT_MIN_AVAILABLE);
         assert!(!r.ssh.load_dot_ssh_pub_keys);
         assert!(!r.ssh.forward_agent);
@@ -857,15 +851,15 @@ mod tests {
         assert_eq!(r.timezone, "Europe/Berlin");
         // Nested scalars follow the same rule.
         let r = resolve(
-            "user: {shell: /bin/zsh}\nmemoryPolicy: {reportDelayMs: 100}",
-            Some("user: {name: bob, uid: 1001}\nmemoryPolicy: {reportDelayMs: 1, minAvailable: 1GiB}"),
+            "user: {shell: /bin/zsh}\nmemoryPolicy: {pressureBalloon: true}",
+            Some("user: {name: bob, uid: 1001}\nmemoryPolicy: {pressureBalloon: false, minAvailable: 1GiB}"),
             Some("user: {name: carol}"),
         )
         .unwrap();
         assert_eq!(r.user.name, "carol");
         assert_eq!(r.user.uid, 1001);
         assert_eq!(r.user.shell, "/bin/zsh");
-        assert_eq!(r.memory_policy.report_delay_ms, 100);
+        assert!(r.memory_policy.pressure_balloon);
         assert_eq!(r.memory_policy.min_available, ByteSize::from_gib(1));
     }
 
@@ -1100,7 +1094,6 @@ mod tests {
             timezone: Some("Asia/Tokyo".into()),
             memory_policy: MemoryPolicy {
                 pressure_balloon: Some(true),
-                report_delay_ms: Some(50),
                 min_available: Some(ByteSize::from_mib(100)),
             },
             message: Some("hi".into()),

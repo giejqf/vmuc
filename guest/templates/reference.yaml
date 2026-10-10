@@ -179,9 +179,6 @@ memoryPolicy:
   # rules in docs/plan.md). Free page reporting is always on regardless.
   # Built-in default: false
   pressureBalloon: null
-  # Guest page_reporting.page_reporting_delay_ms.
-  # Built-in default: 500
-  reportDelayMs: null
   # The balloon never pushes guest "available" memory below this.
   # Built-in default: "256MiB"
   minAvailable: null

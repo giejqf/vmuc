@@ -372,11 +372,9 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
         Some(p) => format!("PARTUUID={}", p.unique_guid.to_string().to_lowercase()),
         None => "/dev/vda".to_owned(),
     };
-    let mut cmdline = format!(
-        "console=hvc0 earlycon=pl011,0x09000000 root={root_arg} rw \
-         page_reporting.page_reporting_delay_ms={} panic=-1",
-        resolved.memory_policy.report_delay_ms
-    );
+    // Free page reporting's delay is hard-coded to 2 s in Linux 6.18
+    // (`mm/page_reporting.c`); there is no command-line knob for it.
+    let mut cmdline = format!("console=hvc0 earlycon=pl011,0x09000000 root={root_arg} rw panic=-1");
     if let Some(extra) = resolved
         .images
         .first()

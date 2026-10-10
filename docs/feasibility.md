@@ -57,8 +57,9 @@ Two independent implementations converged on the same sequence:
    (`CONFIG_VIRTIO_BALLOON`, `CONFIG_PAGE_REPORTING`). Linux reports
    free runs at `page_reporting_order` granularity, which defaults to
    the pageblock order: **2 MiB on a 4 KiB-page arm64 guest**, about two
-   seconds after the pages become free (`page_reporting.page_reporting_delay_ms`,
-   default 2000).
+   seconds after the pages become free (hard-coded `2*HZ` in
+   `mm/page_reporting.c`; the `page_reporting_delay_ms` knob some docs
+   mention does not exist in 6.18).
 2. For each reported range the host does, in order:
    `hv_vm_unmap(gpa, len)` → `mmap(host_addr, len, MAP_FIXED|MAP_ANON|MAP_PRIVATE)`
    → `hv_vm_map(host_addr, gpa, len, RWX)` → acknowledge the report.

@@ -127,7 +127,7 @@ Global: `~/.vmuc/_config/{user,user.pub,default.yaml,override.yaml}`,
    devices, writes kernel + FDT, creates N vCPUs on N threads (once),
    sets BSP PC/X0/CPSR, starts the BSP; secondaries park until PSCI
    CPU_ON.
-3. Kernel cmdline: `console=hvc0 earlycon=pl011,0x09000000 root=/dev/vdaN rw rootfstype=ext4 page_reporting.page_reporting_delay_ms=500 ...`.
+3. Kernel cmdline: `console=hvc0 earlycon=pl011,0x09000000 root=PARTUUID=<root> rw panic=-1 ...` (PARTUUID so device order cannot matter; the kernel has no knob for the 2 s page-reporting delay).
 4. Agent (installed by cloud-init from the cidata ISO on first boot, then
    a systemd unit) connects on vsock; host marks `running` when ssh
    probe over the tunnel succeeds and `/run/vmuc-boot-done` carries the

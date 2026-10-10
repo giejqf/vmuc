@@ -348,10 +348,6 @@ fn merge(child: InstanceConfig, base: InstanceConfig) -> InstanceConfig {
                 .memory_policy
                 .pressure_balloon
                 .or(base.memory_policy.pressure_balloon),
-            report_delay_ms: child
-                .memory_policy
-                .report_delay_ms
-                .or(base.memory_policy.report_delay_ms),
             min_available: child
                 .memory_policy
                 .min_available

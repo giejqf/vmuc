@@ -382,9 +382,6 @@ pub struct MemoryPolicy {
     /// Answer host memory pressure by inflating the balloon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pressure_balloon: Option<bool>,
-    /// Guest `page_reporting.page_reporting_delay_ms`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report_delay_ms: Option<u32>,
     /// Never balloon the guest below this much available memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_available: Option<ByteSize>,
