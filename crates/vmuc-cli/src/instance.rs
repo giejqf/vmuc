@@ -15,7 +15,7 @@ use vmuc_config::{
     Builtin, InstanceConfig, Resolution, ResolvedConfig, TemplateStore, VmucHome, fill_defaults,
 };
 use vmuc_image::sparse::SparseWriter;
-use vmuc_image::{Cache, Digest, decompress_if_needed, root_partition_index};
+use vmuc_image::{Cache, Digest, decompress_if_needed};
 
 /// Overrides from `vmuc create` flags, applied on top of the template.
 #[derive(Debug, Default)]
@@ -343,19 +343,37 @@ pub struct BootInfo {
     pub disk: PathBuf,
     pub seed: PathBuf,
     pub root_partition: Option<u32>,
+    /// Informational: what the root is called when the disk is `/dev/vda`.
     pub root_device: String,
+    /// What the kernel actually mounts: `PARTUUID=…` for a GPT image so
+    /// device enumeration order (QEMU numbers virtio-mmio devices in
+    /// reverse) cannot swap the seed and the disk; `/dev/vda` otherwise.
+    pub root_arg: String,
     pub mac_address: String,
     pub cmdline: String,
 }
 
 pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<BootInfo> {
-    let root_partition = root_partition_index(&inst.disk())?;
+    let gpt = vmuc_image::Gpt::read(&inst.disk())?;
+    let root = gpt
+        .as_ref()
+        .map(vmuc_image::Gpt::find_root_partition)
+        .transpose()?
+        .and_then(|idx| {
+            gpt.as_ref()
+                .and_then(|g| g.partitions.iter().find(|p| p.index == idx).cloned())
+        });
+    let root_partition = root.as_ref().map(|p| p.index);
     let root_device = match root_partition {
         Some(n) => format!("/dev/vda{n}"),
         None => "/dev/vda".to_owned(),
     };
+    let root_arg = match &root {
+        Some(p) => format!("PARTUUID={}", p.unique_guid.to_string().to_lowercase()),
+        None => "/dev/vda".to_owned(),
+    };
     let mut cmdline = format!(
-        "console=hvc0 earlycon=pl011,0x09000000 root={root_device} rw \
+        "console=hvc0 earlycon=pl011,0x09000000 root={root_arg} rw \
          page_reporting.page_reporting_delay_ms={} panic=-1",
         resolved.memory_policy.report_delay_ms
     );
@@ -377,6 +395,7 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
         seed: inst.seed(),
         root_partition,
         root_device,
+        root_arg,
         mac_address: resolved.network.mac_address.clone(),
         cmdline,
     })
