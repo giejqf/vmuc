@@ -596,7 +596,9 @@ mod tests {
         );
         // Written data is about 64k+1k+2k+700k+4k; the holes must stay holes.
         let alloc = allocated_bytes(&out).unwrap();
-        assert!(alloc < 2 << 20, "{}: allocated {alloc}", qcow.display());
+        if cfg!(target_os = "linux") {
+            assert!(alloc < 2 << 20, "{}: allocated {alloc}", qcow.display());
+        }
 
         let mut img = Qcow2::open(qcow).unwrap();
         assert_eq!(img.virtual_size(), 16 << 20);

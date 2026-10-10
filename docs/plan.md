@@ -385,6 +385,13 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
 - E4 inotify propagation for writable mounts.
 - E5 Snapshot/restore (needs private file mappings to be excluded from
   reclaim, as mvm found).
+- E6 APFS sparse accounting: the macOS CI runners report full
+  allocation (`st_blocks`) for files written with seek-over-zero holes,
+  while Linux reports only the data. Measure on a real Mac whether APFS
+  really allocates, or only accounts differently, and whether
+  `F_PUNCHHOLE` after the fact changes it; disk images and decompressed
+  images depend on the answer. The three allocation assertions in
+  vmuc-image tests are Linux-only until then.
 
 ## Development workflow
 

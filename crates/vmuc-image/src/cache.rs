@@ -570,10 +570,12 @@ mod tests {
             let out = decompress_if_needed(&comp).unwrap();
             assert_eq!(out, dir.join("data.raw"));
             assert_eq!(fs::read(&out).unwrap(), raw, "{tool}");
-            assert!(
-                crate::sparse::allocated_bytes(&out).unwrap() < 1 << 20,
-                "{tool}"
-            );
+            if cfg!(target_os = "linux") {
+                assert!(
+                    crate::sparse::allocated_bytes(&out).unwrap() < 1 << 20,
+                    "{tool}"
+                );
+            }
             assert!(!dir.join("data.raw.partial").exists());
             // Cached: a second call does not rewrite the file.
             let mtime = fs::metadata(&out).unwrap().modified().unwrap();
