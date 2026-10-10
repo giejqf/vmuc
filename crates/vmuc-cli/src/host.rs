@@ -10,8 +10,12 @@ pub struct HostInfo {
     pub os: &'static str,
     pub arch: &'static str,
     pub os_version: Option<String>,
-    /// `kern.hv_support`: the kernel says Hypervisor.framework is usable.
+    /// `kern.hv_support`, when the sysctl exists (it does not on every
+    /// macOS build, so it is advisory only).
     pub hv_support: Option<bool>,
+    /// Result of actually creating and destroying a VM in a native build:
+    /// the only check that is authoritative. `None` off macOS/aarch64.
+    pub hv_probe: Option<Result<(), String>>,
     /// This build links Hypervisor.framework at all.
     pub native: bool,
     pub supported: bool,
@@ -38,12 +42,17 @@ impl HostInfo {
         if hv_support == Some(false) {
             reasons.push("kern.hv_support is 0: Hypervisor.framework is unavailable here".into());
         }
+        let hv_probe = vmuc_hv::NATIVE.then(probe_hv);
+        if let Some(Err(e)) = &hv_probe {
+            reasons.push(format!("hv_vm_create failed: {e}"));
+        }
         Self {
             version: env!("CARGO_PKG_VERSION"),
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
             os_version,
             hv_support,
+            hv_probe,
             native: vmuc_hv::NATIVE,
             supported: reasons.is_empty(),
             reasons,
@@ -57,6 +66,10 @@ impl HostInfo {
             "arch": self.arch,
             "osVersion": self.os_version,
             "hvSupport": self.hv_support,
+            "hvProbe": self.hv_probe.as_ref().map(|r| match r {
+                Ok(()) => "ok".to_string(),
+                Err(e) => e.clone(),
+            }),
             "native": self.native,
             "supported": self.supported,
             "reasons": self.reasons,
@@ -71,10 +84,12 @@ impl fmt::Display for HostInfo {
         if let Some(v) = &self.os_version {
             writeln!(f, "os version:  {v}")?;
         }
-        match self.hv_support {
-            Some(true) => writeln!(f, "hypervisor:  available")?,
-            Some(false) => writeln!(f, "hypervisor:  unavailable")?,
-            None => writeln!(f, "hypervisor:  unknown (not macOS)")?,
+        match (&self.hv_probe, self.hv_support) {
+            (Some(Ok(())), _) => writeln!(f, "hypervisor:  available (hv_vm_create ok)")?,
+            (Some(Err(e)), _) => writeln!(f, "hypervisor:  unavailable ({e})")?,
+            (None, Some(true)) => writeln!(f, "hypervisor:  kern.hv_support=1 (not probed)")?,
+            (None, Some(false)) => writeln!(f, "hypervisor:  kern.hv_support=0")?,
+            (None, None) => writeln!(f, "hypervisor:  not probed (this build cannot run VMs)")?,
         }
         writeln!(
             f,
@@ -86,6 +101,13 @@ impl fmt::Display for HostInfo {
         }
         Ok(())
     }
+}
+
+/// Creates and immediately destroys a VM. Distinguishes a missing
+/// entitlement (`Denied`) from a host without virtualization
+/// (`Unsupported`, e.g. a hosted CI runner).
+fn probe_hv() -> Result<(), String> {
+    vmuc_hv::HvVm::new().map(drop).map_err(|e| e.to_string())
 }
 
 /// `true` when a dotted version string's major part is at least `major`.
