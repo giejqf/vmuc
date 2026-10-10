@@ -28,7 +28,7 @@ instances, and nothing graphical beyond the terminal.
 | Virtio | virtio-mmio transport, split queues, own device models: console, blk, net, vsock, fs, rng, balloon | PCI buys nothing without graphics or passthrough; mmio is what ArcBox, libkrun, Firecracker use |
 | Memory | Anonymous `mmap` lazily populated, mapped once; free page reporting + unmap/refresh/remap release on a dedicated thread; host pressure responder; optional balloon target off by default | See `feasibility.md` requirement 3 |
 | Guest page size | 4 KiB | Distro userspace compatibility; 16 KiB is experiment E3 |
-| Networking | Own user-space NAT (ARP/DHCP/DNS/ICMP/UDP proxy, TCP terminate-and-splice), no vmnet, no bridging in v0.1 | vmnet needs a restricted entitlement or root |
+| Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). The user-space NAT stack moves to v0.2 as the sudo-free fallback | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames |
 | Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
 | Shell | System `ssh` with `ProxyCommand vmuc _proxy <inst> 22` through a vsock tunnel; `ssh.config` written per instance | No host TCP port, works with any sshd, IDE-friendly |
 | File sharing | Own virtiofs (FUSE-over-virtqueue passthrough), no DAX in v0.1 | Only option without Apple devices; DAX is experiment E2 |
@@ -43,7 +43,7 @@ instances, and nothing graphical beyond the terminal.
 | Forbidden crates | Anything implementing a VMM, hypervisor bindings, virtqueues, virtio devices, a virtiofs/FUSE server, a TCP/IP stack, or wrapping vz/QEMU/libkrun | Requirement 4 read strictly, and the memory manager must own guest memory |
 | License | Apache-2.0 only; `NOTICE` carries attributions for code ported from ArcBox (MIT OR Apache-2.0) | Requirement |
 | Distribution | Homebrew formula in our own tap, ad-hoc codesign with `vmuc.entitlements` at install; kernel as a formula resource | Lima and QEMU prove it |
-| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, bridged networking, snapshots, DAX, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
+| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots, DAX, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
 
 ## Repository layout
 
@@ -172,22 +172,39 @@ reclaim never runs on a vCPU thread.
 
 ### Networking (`vmuc-net`)
 
-Guest 192.168.106.2/24, gateway and DNS at 192.168.106.1, DHCP from the
-NAT. virtio-net device with MRG_RXBUF and host-side TSO/checksum offload
-(the NAT terminates TCP, so guest segments never hit a wire). The
-datapath is one `mio` loop owning the virtio-net TX/RX queues and all
-host sockets: TCP SYN from the guest → host `connect()` → synthesized
-handshake → splice; UDP → per-flow host socket with a 60 s idle timeout;
-ICMP echo → `SOCK_DGRAM` ICMP socket; DNS → forwarder to the host
-resolver with a small cache; ARP and DHCP answered locally.
-`host.vmuc.internal` resolves to the gateway.
+Two processes share the work:
 
-Port forwarding: the agent streams listening-socket add/remove events
+- `vmuc-vmnet-helper` (root, tiny, audited): opens one vmnet interface
+  per instance with `vmnet_start_interface` in `VMNET_SHARED_MODE`
+  (default) or `VMNET_BRIDGED_MODE` with the configured host interface,
+  and relays Ethernet frames between the interface and a `SOCK_DGRAM`
+  unix socketpair handed to it by the VMM. It parses nothing. It is
+  started with `sudo` through a sudoers rule that `vmuc sudoers` prints
+  (Lima's `limactl sudoers` pattern) and exits when its socket closes.
+  It never touches guest memory or the VM.
+- The VMM's virtio-net device (MRG_RXBUF, checksum offload negotiated
+  off because frames hit a real bridge) moves frames between the
+  virtqueues and that socket on a dedicated thread, batching per
+  `recvmsg_x`/`sendmsg_x` where available.
+
+In shared mode macOS runs DHCP and NAT: the guest gets a `192.168.64.0/24`
+address reachable from the host, so `ssh user@<guest-ip>` works without
+vmuc in the path, and `host.vmuc.internal` resolves to the host's
+address on that bridge. The agent reports the guest's addresses so
+`vmuc list` and `ssh.config` can show them. In bridged mode the guest
+takes a lease from the LAN's DHCP and is reachable from other machines.
+
+Port forwarding to `127.0.0.1` stays, for callers that expect
+`localhost:<port>`: the agent streams listening-socket add/remove events
 (netlink `inet_diag`, polled every 3 s plus an eBPF `sys_exit_bind`
 tracepoint where available). The host applies `port_forwards` rules
 (Lima's rule shape: guest ip/port/range, host ip/port/range, proto,
 ignore, static) and opens loopback listeners; each accepted connection
 opens a vsock connection to the agent, which dials the guest socket.
+
+The user-space NAT (ARP/DHCP/DNS/ICMP/UDP proxy, TCP
+terminate-and-splice) is v0.2 work and becomes the no-sudo fallback;
+its design is unchanged from the feasibility study.
 
 ### Control and agent protocol (`vmuc-proto`)
 
@@ -310,16 +327,23 @@ machine is required.
   guest footprint < 350 MiB after first reclaim; no reclaim-induced
   stall > 5 ms on any vCPU.
 
-### M6 — Networking (3–4 weeks, Linux first via tun harness, then Mac)
+### M6 — Networking (2–3 weeks, Mac)
 
-- virtio-net (MRG_RXBUF, host offloads), NAT datapath, DHCP, DNS,
-  ICMP, UDP, TCP splice, `host.vmuc.internal`.
+- `vmuc-vmnet-helper`: vmnet FFI (`vmnet_start_interface`,
+  `vmnet_read`/`vmnet_write`, interface parameters), shared and bridged
+  modes, socketpair relay, `vmuc sudoers`.
+- virtio-net device wired to the relay socket; MAC from config or
+  derived from the instance name.
+- Agent reports addresses; `vmuc list` shows the guest IP; `ssh.config`
+  gets a second `Host NAME-ip` entry using it.
 - Port forwarder: rules, dynamic events from the agent, static rules,
   loopback listeners, vsock tunnels.
-- `bench/net-iperf`: targets > 10 Gbps single-flow each direction,
+- `bench/net-iperf`: targets > 10 Gbps single-flow each direction
+  (Lima measures VZ NAT at 59 Gbit/s, so vmnet has headroom),
   < 0.3 ms vsock RPC p50.
-- Exit: `curl` from the guest works; `python -m http.server` in the
-  guest is reachable on the host automatically.
+- Exit: `curl` from the guest works; `ssh user@<guest-ip>` from the host
+  works; `python -m http.server` in the guest is reachable on
+  `localhost` automatically.
 
 ### M7 — virtiofs (3–4 weeks, Linux first via /dev/fuse, then Mac)
 

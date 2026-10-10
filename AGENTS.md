@@ -222,7 +222,9 @@ calls `hv_*`.
   works: `codesign --force --sign - --entitlements vmuc.entitlements target/debug/vmuc`.
   `make mac-test` does this after every build.
 - Never request `com.apple.vm.networking`; it is restricted and an
-  ad-hoc signed binary claiming it is killed on launch.
+  ad-hoc signed binary claiming it is killed on launch. vmnet access
+  lives only in `vmuc-vmnet-helper`, which runs as root via sudoers,
+  relays frames, and does nothing else.
 - GitHub-hosted macOS runners cannot run HV. End-to-end CI runs on a
   self-hosted Apple silicon runner; unit tests and builds run on
   `macos-15` and `macos-26`.

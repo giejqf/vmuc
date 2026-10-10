@@ -16,3 +16,6 @@ anyhow = { workspace = true }
 
 [lints]
 workspace = true
+
+[dependencies.vmuc-proto]
+path = "../vmuc-proto"

@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn sysreg_encoding() {
         // OSDLR_EL1 is op0=2 op1=0 crn=1 crm=3 op2=4; MSR from X9.
-        let iss = (2u64 << 20) | (4 << 17) | (0 << 14) | (1 << 10) | (9 << 5) | (3 << 1);
+        let iss = (2u64 << 20) | (4 << 17) | (1 << 10) | (9 << 5) | (3 << 1);
         let s = (u64::from(EC_SYS_REG) << 26) | iss;
         let VcpuExit::Exception {
             class:

@@ -24,3 +24,6 @@ path = "src/main.rs"
 
 [dependencies.vmuc-hv]
 path = "../vmuc-hv"
+
+[dependencies.vmuc-proto]
+path = "../vmuc-proto"
