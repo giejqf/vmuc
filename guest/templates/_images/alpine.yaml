@@ -1,0 +1,11 @@
+# Alpine Linux 3.23 arm64 "generic" cloud image (cloud-init, all datasources).
+#
+# Pinned with the sha512 published next to the image:
+# https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.5-aarch64-uefi-cloudinit-r0.qcow2.sha512
+# The image is qcow2; vmuc converts it to a raw sparse disk at create time.
+# Alpine uses OpenRC, not systemd: boot.sh installs an OpenRC service for
+# the agent when systemctl is absent.
+images:
+- location: "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/cloud/generic_alpine-3.23.5-aarch64-uefi-cloudinit-r0.qcow2"
+  arch: "aarch64"
+  digest: "sha512:1917d129cd3245403ad0bbcdfacca6f19244220f74e0ddf26103ebbcd4a391cc855816251266ddb4639ec315f0df1d5365e899147c8e9a5c318286f74cacef9f"

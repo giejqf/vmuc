@@ -1,0 +1,13 @@
+# Ubuntu 24.04 LTS (Noble) arm64 cloud image.
+#
+# The dated snapshot is pinned with the sha256 from
+# https://cloud-images.ubuntu.com/releases/24.04/release-20260926/SHA256SUMS
+# (Ubuntu removes dated directories after a few months; the undated
+# "release" entry below is the unpinned fallback, like Lima's templates).
+images:
+- location: "https://cloud-images.ubuntu.com/releases/24.04/release-20260926/ubuntu-24.04-server-cloudimg-arm64.img"
+  arch: "aarch64"
+  digest: "sha256:1d6bffe64b848468ac97f821d369a4846d983de1800ccf6b5ec8853e85cefc55"
+# Fallback to the latest release image. Run `vmuc prune` to drop a stale cache entry.
+- location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+  arch: "aarch64"

@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: Apache-2.0
+# vmuc guest agent for OpenRC guests (Alpine).
+
+description="vmuc guest agent"
+command=/usr/local/bin/vmuc-agent
+command_background=true
+pidfile=/run/vmuc-agent.pid
+output_log=/var/log/vmuc-agent.log
+error_log=/var/log/vmuc-agent.log
+respawn_delay=1
+
+depend() {
+	need net
+	after cloud-init
+}

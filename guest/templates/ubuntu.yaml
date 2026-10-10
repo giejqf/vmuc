@@ -1,0 +1,6 @@
+# Ubuntu 24.04 LTS (Noble), the current LTS, with the host home read-only.
+#
+#   vmuc create ubuntu
+base:
+- template:_images/ubuntu-24.04
+- template:_default/mounts

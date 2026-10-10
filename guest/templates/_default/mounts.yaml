@@ -1,0 +1,4 @@
+# The host home directory, read-only, at the same path inside the guest.
+mounts:
+- location: "~"
+  writable: false

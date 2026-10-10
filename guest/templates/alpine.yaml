@@ -1,0 +1,22 @@
+# Alpine Linux 3.23, the small one. Boots in well under a second on our
+# kernel; ~250 MB rootfs; OpenRC instead of systemd.
+#
+#   vmuc create alpine
+#
+# The Alpine cloud image ships ash only. The login shell is /bin/sh and
+# bash is installed by the provisioning step below so `vmuc shell` has
+# a familiar shell; remove the provision block to keep the image minimal.
+base:
+- template:_images/alpine
+- template:_default/mounts
+
+user:
+  shell: /bin/sh
+
+provision:
+- mode: system
+  script: |
+    #!/bin/sh
+    set -eu
+    command -v bash >/dev/null 2>&1 && exit 0
+    apk add --no-cache bash sudo

@@ -1,0 +1,9 @@
+# The default instance: Ubuntu 24.04 LTS with the host home mounted read-only.
+#
+#   vmuc create            # uses this template
+#   vmuc create ubuntu     # identical
+#
+# Every field is documented with its built-in default in reference.yaml.
+base:
+- template:_images/ubuntu-24.04
+- template:_default/mounts

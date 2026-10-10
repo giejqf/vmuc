@@ -11,6 +11,14 @@ rust-version.workspace = true
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+dirs = { workspace = true }
+uuid = { workspace = true }
+indexmap = { workspace = true }
+libc = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }

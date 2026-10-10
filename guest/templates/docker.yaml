@@ -1,0 +1,54 @@
+# Ubuntu 24.04 with Docker Engine (docker-ce) from Docker's apt repository.
+#
+#   vmuc create docker
+#   vmuc shell docker -- docker run --rm -it alpine
+#
+# The engine runs rootful inside the VM; the instance user is in the
+# `docker` group. Ports published with `docker run -p` are forwarded to
+# the host automatically.
+base:
+- template:_images/ubuntu-24.04
+- template:_default/mounts
+
+provision:
+- mode: system
+  script: |
+    #!/bin/sh
+    # Installs docker-ce following https://docs.docker.com/engine/install/ubuntu/
+    set -eu
+    command -v docker >/dev/null 2>&1 && exit 0
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y ca-certificates curl
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    . /etc/os-release
+    arch="$(dpkg --print-architecture)"
+    echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+      > /etc/apt/sources.list.d/docker.list
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    systemctl enable --now docker
+    usermod -aG docker "${VMUC_USER}"
+
+probes:
+- mode: readiness
+  description: docker is running
+  script: |
+    #!/bin/sh
+    set -eu
+    i=0
+    until docker info >/dev/null 2>&1; do
+      i=$((i + 1))
+      if [ "$i" -ge 30 ]; then
+        echo >&2 "docker is not running yet"
+        exit 1
+      fi
+      sleep 3
+    done
+  hint: See /var/log/cloud-init-output.log in the guest.
+
+message: |
+  Docker is installed inside the VM. Try:
+    vmuc shell docker -- docker run --rm hello-world

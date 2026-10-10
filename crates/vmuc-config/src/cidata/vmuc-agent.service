@@ -1,0 +1,14 @@
+[Unit]
+Description=vmuc guest agent
+Documentation=https://github.com/giejqf/vmuc
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vmuc-agent
+Restart=always
+RestartSec=1
+User=root
+
+[Install]
+WantedBy=multi-user.target
