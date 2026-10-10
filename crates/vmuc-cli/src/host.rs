@@ -185,6 +185,48 @@ fn sysctl_u32(_name: &str) -> Option<u32> {
     None
 }
 
+/// Physical RAM in bytes, for the default-memory rule. `0` when unknown
+/// (the config layer then falls back to its cap).
+pub fn host_ram_bytes() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl_u64("hw.memsize").unwrap_or(0)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("MemTotal:"))
+                    .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
+            })
+            .map_or(0, |kb| kb * 1024)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        0
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sysctl_u64(name: &str) -> Option<u64> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    let mut value: u64 = 0;
+    let mut len: libc::size_t = size_of::<u64>();
+    // SAFETY: `value` is a valid u64 out-buffer of `len` bytes.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            cname.as_ptr(),
+            (&raw mut value).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

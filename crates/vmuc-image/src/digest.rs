@@ -129,6 +129,23 @@ impl<W: Write> Write for DigestWriter<W> {
     }
 }
 
+/// Lower-case hex SHA-512 of a file, for images whose publisher only
+/// ships a sha512 checksum (Alpine). Streams the file once.
+pub fn sha512_hex_of_file(path: &Path) -> io::Result<String> {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha512::new();
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

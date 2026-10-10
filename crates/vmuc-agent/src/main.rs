@@ -23,7 +23,11 @@ fn main() -> anyhow::Result<()> {
     use std::io::Write;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut listen_spec = format!("vsock:{}", vmuc_proto::AGENT_VSOCK_PORT);
+    // Default: vsock. A harness without vsock (QEMU TCG) overrides it on
+    // the kernel command line: `vmuc.agent.listen=tcp:0.0.0.0:7700`.
+    let mut listen_spec =
+        listen_from_cmdline(&std::fs::read_to_string("/proc/cmdline").unwrap_or_default())
+            .unwrap_or_else(|| format!("vsock:{}", vmuc_proto::AGENT_VSOCK_PORT));
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -58,6 +62,29 @@ fn main() -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION")
     );
     serve::run(&listener)
+}
+
+/// Extracts `vmuc.agent.listen=SPEC` from a kernel command line.
+#[cfg(target_os = "linux")]
+fn listen_from_cmdline(cmdline: &str) -> Option<String> {
+    cmdline
+        .split_whitespace()
+        .find_map(|kv| kv.strip_prefix("vmuc.agent.listen="))
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    #[test]
+    fn cmdline_override() {
+        assert_eq!(
+            super::listen_from_cmdline("console=hvc0 vmuc.agent.listen=tcp:0.0.0.0:7700 rw"),
+            Some("tcp:0.0.0.0:7700".to_owned())
+        );
+        assert_eq!(super::listen_from_cmdline("console=hvc0 rw"), None);
+        assert_eq!(super::listen_from_cmdline("vmuc.agent.listen="), None);
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

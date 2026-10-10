@@ -1148,11 +1148,15 @@ version = "0.1.0-dev"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs",
  "libc",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "vmuc-config",
  "vmuc-hv",
+ "vmuc-image",
  "vmuc-proto",
 ]
 

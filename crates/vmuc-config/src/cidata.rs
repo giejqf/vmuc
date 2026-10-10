@@ -244,9 +244,9 @@ fn render_user_data(
                     m.mount_point.clone(),
                     "virtiofs".to_owned(),
                     if m.writable {
-                        "defaults"
+                        "defaults,nofail"
                     } else {
-                        "defaults,ro"
+                        "defaults,ro,nofail"
                     }
                     .to_owned(),
                     "0".to_owned(),
@@ -549,8 +549,8 @@ timezone: Europe/Berlin
         assert_eq!(m[0][0], "mount0");
         assert_eq!(m[0][1], "/Users/alice");
         assert_eq!(m[0][2], "virtiofs");
-        assert_eq!(m[0][3], "defaults,ro");
-        assert_eq!(m[1][3], "defaults");
+        assert_eq!(m[0][3], "defaults,ro,nofail");
+        assert_eq!(m[1][3], "defaults,nofail");
         assert_eq!(m[1][5], "0");
         assert_eq!(v["timezone"], "Europe/Berlin");
         assert_eq!(v["manage_resolv_conf"], true);

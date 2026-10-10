@@ -1,46 +1,135 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The `vmuc` binary. One executable, several roles: the user-facing CLI,
 //! the per-instance VMM (`vmuc _vmm NAME`) and the ssh ProxyCommand
-//! bridge (`vmuc _proxy NAME PORT`). The hidden roles exist because the
-//! entitled binary must be the process that owns the Hypervisor.framework
-//! VM.
+//! bridge (`vmuc _proxy`). The hidden roles exist because the entitled
+//! binary must be the process that owns the Hypervisor.framework VM.
 
+mod agent_client;
 mod host;
+mod instance;
+mod keys;
+mod proxy;
 
-use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use vmuc_config::{TemplateStore, VmucHome};
 
 #[derive(Parser)]
 #[command(name = "vmuc", version, about = "ARM Linux VMs on Apple silicon")]
 struct Cli {
     /// Log filter, e.g. `info` or `vmuc_vmm=debug`.
-    #[arg(long, env = "VMUC_LOG", default_value = "info", global = true)]
+    #[arg(long, env = "VMUC_LOG", default_value = "warn", global = true)]
     log: String,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Format {
+    Table,
+    Json,
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// Show versions, host capabilities and paths.
     Info {
-        /// Emit JSON instead of text.
         #[arg(long)]
         json: bool,
+    },
+    /// Create an instance from a template (`template:NAME`, a file, or a URL).
+    Create {
+        /// `ubuntu`, `template:docker`, `./my.yaml`, `https://…/x.yaml`.
+        #[arg(default_value = "template:default")]
+        template: String,
+        /// Instance name; defaults to the template's name.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        cpus: Option<u32>,
+        /// e.g. `8GiB`.
+        #[arg(long)]
+        memory: Option<String>,
+        /// e.g. `100GiB`.
+        #[arg(long)]
+        disk: Option<String>,
+        /// `LOCATION[:w]`, may repeat.
+        #[arg(long)]
+        mount: Vec<String>,
+    },
+    /// List instances.
+    #[command(alias = "ls")]
+    List {
+        #[arg(long, short, value_enum, default_value = "table")]
+        format: Format,
+        /// Names only.
+        #[arg(short)]
+        quiet: bool,
+    },
+    /// Delete an instance and its disk.
+    #[command(alias = "rm")]
+    Delete { name: String },
+    /// List shipped and user templates.
+    Template {
+        #[command(subcommand)]
+        cmd: TemplateCmd,
     },
     /// Run the VMM for one instance (spawned by `vmuc start`).
     #[command(name = "_vmm", hide = true)]
     Vmm { name: String },
-    /// Bridge stdio to a guest TCP port over vsock (ssh ProxyCommand).
+    /// ssh ProxyCommand: bridge stdio to a guest TCP port via the agent.
     #[command(name = "_proxy", hide = true)]
-    Proxy { name: String, port: u16 },
+    Proxy {
+        name: String,
+        #[arg(default_value_t = 22)]
+        port: u16,
+        /// Reach the agent directly (harness): `tcp:HOST:PORT` or `unix:PATH`.
+        #[arg(long)]
+        via: Option<String>,
+    },
+    /// Render a fresh cloud-init seed (`cidata.iso`) for one boot.
+    #[command(name = "_seed", hide = true)]
+    Seed {
+        name: String,
+        /// Agent binary to ship in the seed.
+        #[arg(long)]
+        agent: Option<PathBuf>,
+        /// Leave virtiofs mounts out (no virtiofs device present).
+        #[arg(long)]
+        no_mounts: bool,
+    },
+    /// Print the boot parameters for an instance as JSON.
+    #[command(name = "_bootinfo", hide = true)]
+    BootInfo { name: String },
+    /// Call one agent method: `vmuc _agent tcp:127.0.0.1:17700 mem_info`.
+    #[command(name = "_agent", hide = true)]
+    Agent {
+        via: String,
+        method: String,
+        params: Option<String>,
+    },
 }
 
+#[derive(Subcommand)]
+enum TemplateCmd {
+    List,
+    /// Print a template after flattening its `base:` chain.
+    Show {
+        name: String,
+    },
+}
+
+#[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(&cli.log))
         .with_writer(std::io::stderr)
         .init();
+
+    let home = VmucHome::detect()?;
+    let store = TemplateStore::new(&home, installed_templates().as_deref());
 
     match cli.command {
         Command::Info { json } => {
@@ -49,12 +138,151 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&info.to_json())?);
             } else {
                 print!("{info}");
+                println!("home:        {}", home.root().display());
             }
-            Ok(())
         }
+        Command::Create {
+            template,
+            name,
+            cpus,
+            memory,
+            disk,
+            mount,
+        } => {
+            let overrides = instance::CreateOverrides {
+                cpus,
+                memory,
+                disk,
+                mounts: mount,
+            };
+            let template = normalize_locator(&template);
+            let inst = instance::create(&home, &store, &template, name.as_deref(), &overrides)?;
+            println!("created {} in {}", inst.name, inst.dir.display());
+        }
+        Command::List { format, quiet } => {
+            let rows = instance::list(&home)?;
+            match format {
+                _ if quiet => rows.iter().for_each(|r| println!("{}", r.name)),
+                Format::Json => println!("{}", serde_json::to_string_pretty(&rows)?),
+                Format::Table => {
+                    println!(
+                        "{:<16} {:<8} {:>4} {:>8} {:>8}  DIR",
+                        "NAME", "STATUS", "CPUS", "MEMORY", "DISK"
+                    );
+                    for r in &rows {
+                        println!(
+                            "{:<16} {:<8} {:>4} {:>8} {:>8}  {}",
+                            r.name,
+                            r.status,
+                            r.cpus,
+                            r.memory,
+                            r.disk,
+                            r.dir.display()
+                        );
+                    }
+                }
+            }
+        }
+        Command::Delete { name } => {
+            instance::delete(&home, &name)?;
+            println!("deleted {name}");
+        }
+        Command::Template { cmd } => match cmd {
+            TemplateCmd::List => store.names().iter().for_each(|n| println!("{n}")),
+            TemplateCmd::Show { name } => {
+                let vmuc_config::Resolution::Loaded(t) =
+                    store.resolve(&normalize_locator(&name), None)?
+                else {
+                    anyhow::bail!("{name} is a URL; download it first");
+                };
+                print!("{}", store.embed(&t)?.to_yaml()?);
+            }
+        },
         Command::Vmm { name } => anyhow::bail!("`_vmm {name}`: the VMM arrives in milestone M2"),
-        Command::Proxy { name, port } => {
-            anyhow::bail!("`_proxy {name} {port}`: the vsock bridge arrives in milestone M4")
+        Command::Proxy { name, port, via } => {
+            let Some(via) = via else {
+                anyhow::bail!(
+                    "`_proxy {name}`: vsock through the VMM arrives in M4; use --via for now"
+                );
+            };
+            proxy::run(&via, port)?;
         }
+        Command::Seed {
+            name,
+            agent,
+            no_mounts,
+        } => {
+            let inst = instance::Instance::open(&home, &name)?;
+            let resolved = inst.resolved(&home)?;
+            let boot_id =
+                instance::write_seed(&home, &inst, &resolved, agent.as_deref(), !no_mounts)?;
+            println!(
+                "{}",
+                serde_json::json!({ "bootId": boot_id, "seed": inst.seed() })
+            );
+        }
+        Command::BootInfo { name } => {
+            let inst = instance::Instance::open(&home, &name)?;
+            let resolved = inst.resolved(&home)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&instance::boot_info(&inst, &resolved)?)?
+            );
+        }
+        Command::Agent {
+            via,
+            method,
+            params,
+        } => {
+            let req = agent_client::parse_request(&method, params.as_deref())?;
+            let resp = agent_client::call(&via, &req)?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+            if matches!(resp, vmuc_proto::AgentResponse::Error { .. }) {
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `ubuntu` means `template:ubuntu` unless it names an existing file or
+/// carries a scheme; `vmuc create ubuntu` should just work.
+fn normalize_locator(input: &str) -> String {
+    let has_scheme = input.contains(':');
+    let yaml_ext = std::path::Path::new(input)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
+    let looks_like_path = input.contains('/') || yaml_ext;
+    if input == "-" || has_scheme || looks_like_path || std::path::Path::new(input).exists() {
+        input.to_owned()
+    } else {
+        format!("template:{input}")
+    }
+}
+
+/// `share/vmuc/templates` next to the binary's prefix (Homebrew), else the
+/// embedded copies alone.
+fn installed_templates() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let prefix = exe.parent()?.parent()?;
+    let dir = prefix.join("share/vmuc/templates");
+    dir.is_dir().then_some(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bare_names_become_templates() {
+        assert_eq!(super::normalize_locator("ubuntu"), "template:ubuntu");
+        assert_eq!(
+            super::normalize_locator("template:docker"),
+            "template:docker"
+        );
+        assert_eq!(super::normalize_locator("./x.yaml"), "./x.yaml");
+        assert_eq!(
+            super::normalize_locator("https://a/b.yaml"),
+            "https://a/b.yaml"
+        );
+        assert_eq!(super::normalize_locator("-"), "-");
     }
 }
