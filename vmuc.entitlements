@@ -2,16 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Hypervisor.framework access. Works with an ad-hoc signature:
-         codesign --force --sign - --entitlements vmuc.entitlements vmuc -->
     <key>com.apple.security.hypervisor</key>
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
-    <!-- com.apple.security.virtualization and com.apple.vm.networking are
-         intentionally absent: the first is not used, the second is restricted
-         and gets an ad-hoc signed binary killed on launch. -->
 </dict>
 </plist>
