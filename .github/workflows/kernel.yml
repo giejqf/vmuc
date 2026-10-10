@@ -1,0 +1,62 @@
+name: kernel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "guest/kernel/**"
+      - ".github/workflows/kernel.yml"
+  pull_request:
+    paths:
+      - "guest/kernel/**"
+      - ".github/workflows/kernel.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-boot:
+    name: cross-build arm64 kernel, QEMU boot test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: ver
+        run: |
+          echo "version=$(sed -n 1p guest/kernel/VERSION)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sed -n 2p guest/kernel/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            build-essential flex bison bc libssl-dev libelf-dev dwarves \
+            cpio xz-utils qemu-system-arm
+
+      - name: Cache kernel tarball
+        uses: actions/cache@v4
+        with:
+          path: guest/kernel/build/linux-*.tar.xz
+          key: linux-tarball-${{ steps.ver.outputs.sha256 }}
+
+      - name: Build kernel
+        run: guest/kernel/build.sh
+
+      - name: Build boot-test initramfs
+        run: guest/kernel/initramfs/build.sh
+
+      - name: QEMU boot test
+        run: guest/kernel/qemu-boot-test.sh
+
+      - name: Upload kernel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmuc-kernel-${{ steps.ver.outputs.version }}-arm64
+          if-no-files-found: error
+          path: |
+            guest/kernel/out/Image
+            guest/kernel/out/config
+            guest/kernel/out/version.txt
+            guest/kernel/out/boot-test.log
