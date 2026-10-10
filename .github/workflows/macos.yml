@@ -1,0 +1,39 @@
+name: macos
+
+# GitHub-hosted Apple silicon runners cannot use Hypervisor.framework
+# (no nested virtualization), so this job builds, unit-tests, signs and
+# runs `vmuc info`. End-to-end tests run on a self-hosted runner (see
+# e2e.yml, added in M2).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal -c clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --release -p vmuc-cli
+      - name: Ad-hoc sign with the hypervisor entitlement
+        run: |
+          codesign --force --sign - --entitlements vmuc.entitlements target/release/vmuc
+          codesign -d --entitlements - target/release/vmuc 2>&1 | grep -q com.apple.security.hypervisor
+      - name: Host self-check (expected unsupported on a hosted runner)
+        run: |
+          target/release/vmuc info
+          target/release/vmuc info --json

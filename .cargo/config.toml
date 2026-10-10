@@ -1,0 +1,10 @@
+# The guest agent is a static musl binary. On a Linux dev box the GNU
+# cross toolchain drives the link; Rust's musl target is self-contained so
+# no musl sysroot is needed.
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-self-contained=yes"]
+
+[alias]
+check-darwin = "check --workspace --all-targets --target aarch64-apple-darwin"
+clippy-darwin = "clippy --workspace --all-targets --target aarch64-apple-darwin -- -D warnings"

@@ -1,0 +1,16 @@
+[package]
+name = "vmuc-virtio"
+description = "Split virtqueues, virtio-mmio transport and device models (console, blk, net, vsock, rng, balloon, fs)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+vmuc
+Copyright 2026 the vmuc authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes code derived from ArcBox
+(https://github.com/arcboxlabs/arcbox), Copyright (c) 2026 ArcBox Labs,
+licensed under MIT OR Apache-2.0. vmuc uses it under the Apache-2.0
+option. Files containing derived code name their source in a header
+comment. Derived pieces as of this writing:
+
+- crates/vmuc-hv/src/ffi.rs, error.rs, exit.rs, memory.rs, vm.rs,
+  vcpu.rs, gic.rs: Hypervisor.framework FFI surface and safe wrappers,
+  from arcbox/virt/arcbox-hv/src/.
+
+Lima (https://github.com/lima-vm/lima, Apache-2.0) is a design reference
+for the CLI, instance directory layout, cloud-init seed, and readiness
+probes. No Lima code is included.

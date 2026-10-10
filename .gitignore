@@ -1,0 +1,11 @@
+/target
+/guest/kernel/build/
+/guest/kernel/linux-*/
+/guest/kernel/*.tar.xz
+/guest/kernel/out/
+*.img
+*.iso
+*.qcow2
+*.log
+.DS_Store
+/.vmuc-mac

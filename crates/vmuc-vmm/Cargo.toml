@@ -1,0 +1,19 @@
+[package]
+name = "vmuc-vmm"
+description = "VM lifecycle, guest RAM and memory manager, vCPU threads, PSCI, FDT, kernel loader, PL011/PL031, MMIO bus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies.vmuc-hv]
+path = "../vmuc-hv"

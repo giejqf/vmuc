@@ -1,0 +1,394 @@
+# vmuc action plan
+
+Companion to `feasibility.md`, which holds the evidence. This file holds
+the decisions and the work. Every decision here is locked; change one by
+editing this file in the same commit as the code that changes it.
+
+## Product in one paragraph
+
+`vmuc` launches ARM Linux virtual machines on Apple silicon Macs from the
+command line, with automatic file sharing, port forwarding, and ssh, the
+way Lima does, but on its own Rust VMM built directly on
+Hypervisor.framework. Its distinguishing feature is memory that flows
+both ways: the guest sees a generous ceiling, the host pays only for
+pages the guest is actually using, and memory the guest frees is back in
+macOS's hands within seconds. There is a TUI for watching and driving
+instances, and nothing graphical beyond the terminal.
+
+## Locked decisions
+
+| Area | Decision | Why |
+|------|----------|-----|
+| Host floor | macOS 15.0+ (Sequoia), Apple silicon only | `hv_gic_*` in-kernel GICv3 is macOS 15+; it is the single biggest efficiency lever |
+| Guest | arm64 Linux only, our own kernel, direct boot, no UEFI, no modules | Requirement 2; direct boot is fastest and simplest; built-in drivers mean one kernel fits every rootfs |
+| Rootfs | Stock cloud images (Ubuntu 24.04 LTS first, then Alpine, Debian, Fedora) + cloud-init NoCloud `cidata.iso` | Lima's model; zero image maintenance for us |
+| Language | Rust, edition 2024, latest stable toolchain, MSRV = stable minus two | No reason to lag |
+| Hypervisor bindings | Hand-written `extern "C"` in `vmuc-hv`, no bindgen, no `hv`/`applevisor` crates | ~250 lines; type-checks on Linux without an SDK |
+| Interrupts | Apple in-kernel GICv3 always on; no emulated GIC, no fallback | Floors macOS at 15; halves idle CPU and wake latency per ArcBox |
+| Virtio | virtio-mmio transport, split queues, own device models: console, blk, net, vsock, fs, rng, balloon | PCI buys nothing without graphics or passthrough; mmio is what ArcBox, libkrun, Firecracker use |
+| Memory | Anonymous `mmap` lazily populated, mapped once; free page reporting + unmap/refresh/remap release on a dedicated thread; host pressure responder; optional balloon target off by default | See `feasibility.md` requirement 3 |
+| Guest page size | 4 KiB | Distro userspace compatibility; 16 KiB is experiment E3 |
+| Networking | Own user-space NAT (ARP/DHCP/DNS/ICMP/UDP proxy, TCP terminate-and-splice), no vmnet, no bridging in v0.1 | vmnet needs a restricted entitlement or root |
+| Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
+| Shell | System `ssh` with `ProxyCommand vmuc _proxy <inst> 22` through a vsock tunnel; `ssh.config` written per instance | No host TCP port, works with any sshd, IDE-friendly |
+| File sharing | Own virtiofs (FUSE-over-virtqueue passthrough), no DAX in v0.1 | Only option without Apple devices; DAX is experiment E2 |
+| Process model | One binary `vmuc`; `vmuc start` spawns detached `vmuc _vmm <name>`; one VM per process | HV allows one VM per process; the entitled binary must own the VM |
+| Control plane | JSON-lines over a unix socket per instance (`vmm.sock`); events appended to `events.jsonl`; status derived from PID liveness + boot-session marker | Lima's design; debuggable with `nc` and `tail` |
+| Host↔agent | Length-prefixed JSON over vsock, one request type per connection; raw byte streams on dedicated vsock connections for tunnels | Simple; control traffic is tiny, bulk traffic bypasses it |
+| Async | No async runtime inside the VMM. Dedicated OS threads per vCPU and per device, `mio` (kqueue) event loops for net and control | ArcBox's experience; fewer surprises on hot paths |
+| Config | YAML, Lima-like schema, nullable fields, layering built-in < `~/.vmuc/_config/default.yaml` < instance < `override.yaml`; templates flattened at create | Proven |
+| Formats | Disk is a raw sparse file; qcow2 read-converted at create time by our own reader (zlib clusters supported); discard punches holes with `F_PUNCHHOLE` | No qemu-img |
+| TUI | ratatui + crossterm, `vmuc tui`, read-mostly with start/stop/shell actions | Requirement 1 |
+| Allowed third-party crates | clap, serde/serde_yaml/serde_json, ratatui, crossterm, libc, thiserror, anyhow (CLI only), mio, flate2, sha2, ureq (downloads), tracing, `vm-fdt` (FDT writer), `virtio-bindings` (constants only) | Non-VM concerns only |
+| Forbidden crates | Anything implementing a VMM, hypervisor bindings, virtqueues, virtio devices, a virtiofs/FUSE server, a TCP/IP stack, or wrapping vz/QEMU/libkrun | Requirement 4 read strictly, and the memory manager must own guest memory |
+| License | Apache-2.0 only; `NOTICE` carries attributions for code ported from ArcBox (MIT OR Apache-2.0) | Requirement |
+| Distribution | Homebrew formula in our own tap, ad-hoc codesign with `vmuc.entitlements` at install; kernel as a formula resource | Lima and QEMU prove it |
+| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, bridged networking, snapshots, DAX, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
+
+## Repository layout
+
+```
+vmuc/
+  AGENTS.md                  agent and contributor rules (loaded by Claude Code)
+  Cargo.toml                 workspace
+  LICENSE                    Apache-2.0
+  NOTICE                     attributions
+  vmuc.entitlements          com.apple.security.hypervisor + network
+  Makefile                   check / test / mac-test / kernel / e2e / bottle
+  crates/
+    vmuc-hv/                 Hypervisor.framework FFI + safe wrappers (vm, vcpu, exit decode, gic)
+    vmuc-vmm/                guest memory + memory manager, vcpu threads, exit dispatch,
+                             PSCI, FDT, kernel loader, PL011, PL031, MMIO bus, device manager
+    vmuc-virtio/             virtqueue, mmio transport, devices/{console,blk,net,vsock,rng,balloon,fs}
+    vmuc-fs/                 virtiofs server: FUSE protocol + passthrough backend
+    vmuc-net/                NAT datapath, DHCP, DNS forwarder, port forwarder
+    vmuc-image/              downloads + cache, sha256, qcow2 reader, GPT, ISO9660 writer, sparse files
+    vmuc-config/             YAML schema, defaults layering, templates, validation
+    vmuc-proto/              CLI↔VMM and host↔agent message types
+    vmuc-agent/              guest agent (aarch64-unknown-linux-musl, static)
+    vmuc-tui/                ratatui front end
+    vmuc-cli/                the `vmuc` binary: CLI + hidden `_vmm`, `_proxy` roles
+  guest/
+    kernel/                  defconfig fragment, pinned version, build script, QEMU boot test
+    templates/               ubuntu.yaml, alpine.yaml, debian.yaml, fedora.yaml, docker.yaml, _images/*.yaml
+  tests/
+    e2e/                     Mac-only: boot, ssh, mounts, ports, memory reclaim scenario
+    bench/                   boot time, idle CPU, net, fs, memory probes (each rerunnable)
+  docs/
+    feasibility.md  plan.md  architecture/  adr/  experiments/  benchmarks/  logs/
+  packaging/
+    homebrew/vmuc.rb         formula (mirrored into the tap repo)
+  .github/workflows/         linux.yml (check, clippy, test, cross-check darwin, kernel build + QEMU boot)
+                             macos.yml (build, unit tests on GH runner; e2e on self-hosted)
+```
+
+Crates stay this coarse until a file needs a `// ====` section divider,
+which is the signal to split it.
+
+## Architecture
+
+### Process and state
+
+```
+vmuc start NAME
+  └─ spawns detached:  vmuc _vmm NAME          (one per instance; owns the HV VM)
+       ├─ writes  ~/.vmuc/NAME/vmm.pid         (atomic rename; ignored if older than host boot)
+       ├─ serves  ~/.vmuc/NAME/vmm.sock        (JSON-lines: status, stat, stop, forward, console)
+       ├─ appends ~/.vmuc/NAME/events.jsonl    (booting / running / degraded / exiting, port events)
+       ├─ logs    ~/.vmuc/NAME/vmm.log, console.log
+       └─ threads: vcpu×N, blk, net-tx, net-rx/NAT, vsock, fs×mounts, reclaim, control
+vmuc shell NAME   → ssh -F ~/.vmuc/NAME/ssh.config NAME   (ProxyCommand: vmuc _proxy NAME 22)
+vmuc tui          → reads every instance's sock + events
+```
+
+Instance directory (`~/.vmuc/<name>/`): `vmuc.yaml`, `vmuc-version`,
+`disk.img`, `cidata.iso`, `vmm.pid`, `vmm.sock`, `events.jsonl`,
+`vmm.log`, `console.log`, `console.sock`, `ssh.config`, `boot-session`.
+Global: `~/.vmuc/_config/{user,user.pub,default.yaml,override.yaml}`,
+`~/.vmuc/_templates/`, cache in `~/Library/Caches/vmuc/`.
+
+### Guest physical map (fixed, documented in the FDT generator)
+
+| IPA | Contents |
+|-----|----------|
+| 0x0800_0000 | GICv3 distributor (64 KiB) |
+| 0x080A_0000 | GICv3 redistributors (32 MiB, up to 128 vCPUs) |
+| 0x0900_0000 | PL011 UART |
+| 0x0901_0000 | PL031 RTC |
+| 0x0A00_0000 | virtio-mmio slots, 32 × 4 KiB, SPIs 32.. |
+| 0x4000_0000 | RAM: kernel Image at +0, initrd (if any) at +128 MiB, FDT at end of RAM, page-aligned |
+
+### Boot sequence
+
+1. `vmuc-cli` resolves config, ensures kernel and image are cached and
+   verified, converts qcow2 → raw sparse if needed, finds the root
+   partition (GPT), writes `cidata.iso` with a fresh per-boot instance ID.
+2. `_vmm` creates the VM (IPA 40-bit), maps RAM, creates the GIC, builds
+   devices, writes kernel + FDT, creates N vCPUs on N threads (once),
+   sets BSP PC/X0/CPSR, starts the BSP; secondaries park until PSCI
+   CPU_ON.
+3. Kernel cmdline: `console=hvc0 earlycon=pl011,0x09000000 root=/dev/vdaN rw rootfstype=ext4 page_reporting.page_reporting_delay_ms=500 ...`.
+4. Agent (installed by cloud-init from the cidata ISO on first boot, then
+   a systemd unit) connects on vsock; host marks `running` when ssh
+   probe over the tunnel succeeds and `/run/vmuc-boot-done` carries the
+   boot ID.
+
+### Memory manager (`vmuc-vmm/src/memory/`)
+
+Components:
+
+- `GuestRam`: one anonymous `MAP_PRIVATE|MAP_ANON` region, 16 KiB
+  aligned, never pre-touched. Mapped once with `hv_vm_map` RWX. Host
+  cost at boot is the kernel image plus whatever the guest touches.
+- `Reclaimer` (own thread): consumes ranges from the balloon device's
+  reporting queue. For each: align inward to 16 KiB; skip if nothing is
+  resident (`mincore`); `hv_vm_unmap` → `mmap(MAP_FIXED|MAP_ANON|MAP_PRIVATE)`
+  at the same host address → `hv_vm_map` RWX → ack. A remap failure is
+  fatal for the instance (the guest would have a hole in RAM); the
+  error path tries once more, then stops the VM with a clear message.
+  Batches consecutive descriptors into one unmap/map when contiguous.
+- `Accounting`: per-instance counters (bytes reported, bytes released,
+  release latency histogram, host `phys_footprint` via `proc_pid_rusage`,
+  guest `MemTotal`/`MemAvailable` via the agent), exposed on `vmm.sock`
+  for `vmuc stat` and the TUI.
+- `PressureResponder`: subscribes to macOS memory pressure
+  (`DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` via libdispatch FFI, with the
+  `kern.memorystatus_vm_pressure_level` sysctl as a poll fallback). On
+  *warn*: ask the agent to `sync; echo 3 > drop_caches; echo 1 > compact_memory`
+  at most once per 30 s. On *critical*: same, plus, if
+  `memory.pressure_balloon: true`, raise the balloon target by ≤ 25% of
+  guest `MemAvailable`, never leaving less than 256 MiB available, at
+  most once per 60 s; return to target 0 when pressure clears for 120 s
+  or guest PSI memory `some` exceeds 10% over 10 s. Off by default.
+- Guest side: kernel with `VIRTIO_BALLOON=y`, `PAGE_REPORTING=y`,
+  `TRANSPARENT_HUGEPAGE=y` (pageblock order 9 → 2 MiB reports),
+  `INIT_ON_FREE_DEFAULT_ON=n`, `PAGE_POISONING=n`. Agent exposes
+  `meminfo`, `psi`, `drop_caches`, `compact` RPCs.
+
+Invariants, also in AGENTS.md: only the unmap/refresh/remap sequence
+returns memory; `madvise` never does; never unmap a range smaller than a
+host page; never map a different host address into a live IPA range;
+reclaim never runs on a vCPU thread.
+
+### Networking (`vmuc-net`)
+
+Guest 192.168.106.2/24, gateway and DNS at 192.168.106.1, DHCP from the
+NAT. virtio-net device with MRG_RXBUF and host-side TSO/checksum offload
+(the NAT terminates TCP, so guest segments never hit a wire). The
+datapath is one `mio` loop owning the virtio-net TX/RX queues and all
+host sockets: TCP SYN from the guest → host `connect()` → synthesized
+handshake → splice; UDP → per-flow host socket with a 60 s idle timeout;
+ICMP echo → `SOCK_DGRAM` ICMP socket; DNS → forwarder to the host
+resolver with a small cache; ARP and DHCP answered locally.
+`host.vmuc.internal` resolves to the gateway.
+
+Port forwarding: the agent streams listening-socket add/remove events
+(netlink `inet_diag`, polled every 3 s plus an eBPF `sys_exit_bind`
+tracepoint where available). The host applies `port_forwards` rules
+(Lima's rule shape: guest ip/port/range, host ip/port/range, proto,
+ignore, static) and opens loopback listeners; each accepted connection
+opens a vsock connection to the agent, which dials the guest socket.
+
+### Control and agent protocol (`vmuc-proto`)
+
+`vmm.sock`: newline-delimited JSON `{ "id", "method", "params" }` /
+`{ "id", "result" | "error" }`. Methods: `status`, `stat`, `stop {force}`,
+`forwards`, `console {follow}`, `balloon_target`, `reclaim_now`.
+Agent on vsock port 7700: same framing; one request per connection;
+methods: `hello`, `meminfo`, `psi`, `drop_caches`, `compact`,
+`sockets.watch` (streams events), `tunnel {addr}` (then raw bytes),
+`exec` (for probes), `time.sync`, `inotify` (deferred to E4).
+
+### CLI surface (v0.1)
+
+```
+vmuc create   [TEMPLATE|FILE|URL] [--name] [--cpus] [--memory] [--disk] [--mount] [--set yq-like]
+vmuc start    NAME [--timeout] [--foreground]
+vmuc stop     NAME [--force]
+vmuc restart  NAME
+vmuc shell    NAME [-- CMD...]   [--workdir]
+vmuc copy     SRC DST            (scp through the tunnel)
+vmuc list     [--format table|json|yaml] [-q]
+vmuc stat     NAME [--watch]     memory in/out, footprint, reclaim latency, cpu, net
+vmuc delete   NAME [--force]
+vmuc edit     NAME
+vmuc info                        versions, kernel, templates, host checks (hv support, macOS version)
+vmuc template list|show NAME
+vmuc prune                       cache
+vmuc tui
+vmuc completion SHELL
+vmuc _vmm NAME        hidden
+vmuc _proxy NAME PORT hidden
+```
+
+### Guest kernel (`guest/kernel`)
+
+Linux LTS current at project start (6.12 or newer LTS), arm64 defconfig
+reduced then extended: virtio-mmio, virtio blk/net/console/vsock/fs/rng/
+balloon, page reporting, ext4/btrfs/xfs/erofs/overlayfs/fuse, netfilter
+and bridge built-in (for Docker templates), cgroup v2, PSI, no modules,
+no graphics, no sound, no USB, HZ=250, NO_HZ_IDLE, 4 KiB pages,
+`CONFIG_ARM64_VA_BITS_48`. Built by `make kernel` on Linux with
+`aarch64-linux-gnu-` cross tools, published as a GitHub release asset
+`vmuc-kernel-<ver>-arm64.img` with sha256 in `vmuc-image/src/assets.rs`.
+
+## Milestones
+
+Sizes are engineering-weeks for one engineer working with coding agents.
+"Linux" means the x86 dev box suffices; "Mac" means an Apple silicon
+machine is required.
+
+### M0 — Bootstrap (1 week, Linux + a few hours on a Mac)
+
+- Workspace, LICENSE, NOTICE, AGENTS.md, Makefile, `rust-toolchain.toml`,
+  `.cargo/config.toml` with `aarch64-apple-darwin` and
+  `aarch64-unknown-linux-musl` targets.
+- `vmuc-hv` FFI surface ported from ArcBox's `ffi.rs` (attributed),
+  `cfg`-gated so the workspace builds on Linux as empty stubs.
+- CI: `linux.yml` runs fmt, clippy, tests, `cargo check --target aarch64-apple-darwin`;
+  `macos.yml` builds and unit-tests on `macos-15` and `macos-26`.
+- Packaging smoke: formula builds locally, `codesign -d --entitlements`
+  shows the hypervisor key, a bottled copy keeps it.
+- Secure the Mac (ssh-reachable, macOS 15+, Xcode CLT, 16 GB+).
+- Exit: green CI on both OSes; `vmuc info` prints host checks.
+
+### M1 — Guest kernel and QEMU harness (1–2 weeks, Linux)
+
+- Kernel config and build script; QEMU `-M virt` boot test with
+  virtio-mmio blk/net/console/vsock/rng/balloon(`free-page-reporting=on`).
+- `vmuc-image`: downloader + cache + sha256, qcow2 → raw, GPT root
+  partition lookup, ISO9660 writer, sparse-file helpers.
+- `vmuc-config`: schema, layering, templates (`ubuntu`, `alpine`).
+- cidata contents (Lima's layout, reduced): `user-data`, `meta-data`,
+  `network-config`, `boot.sh`, agent binary, per-boot ID.
+- `vmuc-agent` skeleton: hello, meminfo, exec, sockets.watch, tunnel.
+- Exit: Ubuntu 24.04 cloud image boots under QEMU with our kernel, user
+  logs in over ssh through the agent tunnel, free page reporting is
+  visible in QEMU's balloon stats.
+
+### M2 — First light on Hypervisor.framework (2–3 weeks, Mac)
+
+- `vmuc-vmm`: guest RAM, vCPU threads, exit dispatch (data abort with
+  PC+4, HVC/SMC without, sysreg RAZ/WI, WFI, vtimer, cancel), PSCI,
+  GIC creation and SPI wiring, FDT, kernel loader, PL011, PL031.
+- Boot the M1 kernel with a busybox initramfs to a serial shell.
+- SMP: 4 vCPUs through PSCI CPU_ON.
+- Teardown contract and `hv_vcpus_exit` based stop.
+- Benchmark: `bench/boot-serial` (power-on to `init` prompt). Target < 400 ms.
+- Exit: `vmuc _vmm` boots to a shell on the console; reboot and poweroff work.
+
+### M3 — Virtio core and storage (2 weeks, Linux first, Mac to verify)
+
+- Split virtqueue with batching and EVENT_IDX, mmio transport,
+  device manager, IRQ assertion through the GIC.
+- Devices: console (hvc0 + console.sock), blk (multi-queue, discard →
+  punch hole, flush), rng.
+- Exit: Ubuntu cloud image boots to login on HV; `bench/boot-ssh`
+  baseline recorded.
+
+### M4 — vsock, agent, lifecycle CLI (2 weeks, Mac)
+
+- virtio-vsock device + host side (connect to guest ports, accept from guest).
+- `_vmm` control socket, events file, PID/boot-session logic.
+- CLI: create/start/stop/restart/list/delete/shell/copy/info/edit,
+  `ssh.config` + `_proxy`, readiness probes.
+- Exit: `vmuc start ubuntu && vmuc shell ubuntu` works end to end;
+  `bench/boot-ssh` target < 3 s from `start` to prompt.
+
+### M5 — Memory manager (2 weeks, Mac)
+
+- Balloon device: F_REPORTING, F_DEFLATE_ON_OOM, F_STATS_VQ.
+- Reclaimer thread with the unmap/refresh/remap sequence, accounting,
+  `vmuc stat`.
+- Pressure responder (warn → drop/compact), agent `drop_caches`,
+  `compact`, `psi`.
+- Optional balloon target with the hysteresis rules; default off.
+- Probes: `bench/mem-reclaim` reproduces lima#2789 (allocate N GiB in
+  tmpfs, free, watch host footprint); `bench/stage2-matrix` reproduces
+  ArcBox's madvise matrix so a macOS update cannot silently break us.
+- Exit targets: ≥ 90% of freed memory back within 10 s; idle Ubuntu
+  guest footprint < 350 MiB after first reclaim; no reclaim-induced
+  stall > 5 ms on any vCPU.
+
+### M6 — Networking (3–4 weeks, Linux first via tun harness, then Mac)
+
+- virtio-net (MRG_RXBUF, host offloads), NAT datapath, DHCP, DNS,
+  ICMP, UDP, TCP splice, `host.vmuc.internal`.
+- Port forwarder: rules, dynamic events from the agent, static rules,
+  loopback listeners, vsock tunnels.
+- `bench/net-iperf`: targets > 10 Gbps single-flow each direction,
+  < 0.3 ms vsock RPC p50.
+- Exit: `curl` from the guest works; `python -m http.server` in the
+  guest is reachable on the host automatically.
+
+### M7 — virtiofs (3–4 weeks, Linux first via /dev/fuse, then Mac)
+
+- FUSE 7.3x protocol server, passthrough backend with inode table,
+  handles, xattr, O_DIRECT/flush semantics, errno translation, uid/gid
+  mapping policy. Test on Linux by mounting through `/dev/fuse`.
+- virtio-fs device, one per mount, multi-queue; fstab entries via cidata.
+- `bench/fs`: fio and `git status` on a large tree; target ≥ VZ
+  virtiofs on the same host (measure Lima vz as the reference).
+- Exit: `~` shared read-only by default, writable mounts work, builds
+  run from a shared tree.
+
+### M8 — TUI (1–2 weeks, Linux for layout, Mac for live data)
+
+- Instance list with status, vCPU load, guest used/available, host
+  footprint, reclaim sparkline, forwarded ports; console tail pane;
+  start/stop/shell key bindings. Reads only from sockets and files; no
+  privileged state.
+
+### M9 — Release engineering (1–2 weeks)
+
+- Tap repository and formula, kernel resource, bottle build on a
+  self-hosted runner, `vmuc info` self-check.
+- Release workflow: tag → Linux job builds kernel + agent assets → Mac
+  job builds, signs, tests → GitHub release draft stays draft until
+  assets exist (ArcBox's ordering lesson).
+- Docs: README, quick start, config reference generated from the
+  schema, benchmarks page with the numbers above.
+- v0.1.0.
+
+Total: roughly 18–24 engineer-weeks to v0.1.0.
+
+### Experiments queued after v0.1
+
+- E1 Balloon target policy tuning with real workloads (needs M5 data).
+- E2 virtiofs DAX via per-file `hv_vm_map` (respect the no-overlap rule).
+- E3 16 KiB guest pages: fewer stage-2 entries, 32 MiB reporting
+  granularity, userspace compatibility survey.
+- E4 inotify propagation for writable mounts.
+- E5 Snapshot/restore (needs private file mappings to be excluded from
+  reclaim, as mvm found).
+
+## Development workflow
+
+Daily loop on the Linux box:
+
+```
+make check        # fmt, clippy -D warnings, test, cargo check --target aarch64-apple-darwin
+make kernel       # cross-build guest kernel (cached), run QEMU boot test
+make agent        # aarch64-unknown-linux-musl static build
+make mac-test     # rsync tree to $VMUC_MAC, cargo test there, stream output back
+make mac-e2e      # same, runs tests/e2e (needs HV)
+make bench NAME=  # runs tests/bench/NAME on the Mac, appends a dated row to docs/benchmarks/NAME.md
+```
+
+Rules of thumb:
+
+- Anything that does not call `hv_*` gets a unit test that runs on
+  Linux. Device models take `&mut [u8]` guest memory and a queue, never
+  a VM handle.
+- `vmuc-hv` compiles to stubs off macOS so clippy covers call sites.
+- Every HV-specific change runs `make mac-e2e` before it lands.
+- Every number lands in `docs/benchmarks/` or `docs/experiments/` in the
+  same commit series, with the probe checked in under `tests/bench/`.
+
+## Immediate next steps (this week)
+
+1. Confirm the handful of judgment calls listed in the chat summary
+   (macOS 15 floor, `vm-fdt`/`virtio-bindings` allowance, tap name and
+   GitHub org, Mac access plan).
+2. `git init`, M0 scaffolding, first CI run.
+3. Order or provision the Mac; M1 proceeds on Linux meanwhile.

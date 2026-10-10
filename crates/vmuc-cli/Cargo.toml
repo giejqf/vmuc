@@ -1,0 +1,26 @@
+[package]
+name = "vmuc-cli"
+description = "The vmuc binary: CLI plus hidden _vmm and _proxy roles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "vmuc"
+path = "src/main.rs"
+
+[dependencies.vmuc-hv]
+path = "../vmuc-hv"
