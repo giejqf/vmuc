@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use vmuc_config::paths::instance as files;
-use vmuc_proto::frame::{read_frame, write_frame};
+use vmuc_proto::jsonl::{read_line, write_line};
 use vmuc_proto::{ControlRequest, ControlResponse};
 
 use super::Shared;
@@ -34,7 +34,7 @@ pub fn spawn(dir: &Path, shared: Arc<Shared>) -> std::io::Result<()> {
 }
 
 fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
-    let Ok(Some(req)) = read_frame::<_, ControlRequest>(&mut s) else {
+    let Ok(Some(req)) = read_line::<_, ControlRequest>(&mut s) else {
         return;
     };
     let resp = match req {
@@ -49,13 +49,13 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
                     Ok(()) => ControlResponse::Ok,
                     Err(message) => ControlResponse::Error { message },
                 };
-                let _ = write_frame(stream, &resp);
+                let _ = write_line(stream, &resp);
             });
             let Ok(mut fallback) = s.try_clone() else {
                 return;
             };
             if let Err(e) = shared.vsock.connect(s, port, reply) {
-                let _ = write_frame(
+                let _ = write_line(
                     &mut fallback,
                     &ControlResponse::Error {
                         message: e.to_string(),
@@ -68,5 +68,5 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
             message: format!("{other:?} is not implemented yet"),
         },
     };
-    let _ = write_frame(&mut s, &resp);
+    let _ = write_line(&mut s, &resp);
 }

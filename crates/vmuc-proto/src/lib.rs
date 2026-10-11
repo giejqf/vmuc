@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Wire types shared by the CLI, the per-instance VMM and the guest agent.
 //!
-//! Two channels use these types, both carrying newline-free JSON in
-//! length-prefixed frames (see [`frame`]):
+//! Two channels use these types:
 //!
-//! - **CLI ↔ VMM** over the instance's `vmm.sock` unix socket:
-//!   [`ControlRequest`] / [`ControlResponse`], plus [`Event`] lines
-//!   appended to `events.jsonl`.
-//! - **Host ↔ guest agent** over vsock port [`AGENT_VSOCK_PORT`]:
+//! - **CLI ↔ VMM** over the instance's `vmm.sock` unix socket: JSON
+//!   lines (see [`jsonl`]), [`ControlRequest`] / [`ControlResponse`], plus
+//!   [`Event`] lines appended to `events.jsonl`.
+//! - **Host ↔ guest agent** over vsock port [`AGENT_VSOCK_PORT`], in
+//!   length-prefixed frames (see [`frame`]):
 //!   [`AgentRequest`] / [`AgentResponse`]. One request per connection;
 //!   streaming methods keep sending responses, and `Tunnel` switches the
 //!   connection to raw bytes after `TunnelReady`.
@@ -16,6 +16,7 @@
 //! never goes through these frames.
 
 pub mod frame;
+pub mod jsonl;
 
 use std::net::IpAddr;
 
