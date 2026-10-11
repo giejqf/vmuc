@@ -8,7 +8,10 @@
 //! in the last 2 MiB of RAM, a 2 MiB-aligned region of its own as the
 //! boot protocol asks.
 
-use std::ops::Range;
+use std::fs::File;
+use std::ops::{Deref, Range};
+use std::os::fd::AsRawFd;
+use std::path::Path;
 
 use vmuc_virtio::{GuestMemory, MemError};
 
@@ -33,6 +36,58 @@ pub enum LoadError {
     BadRamSize(u64),
     #[error(transparent)]
     Memory(#[from] MemError),
+}
+
+/// A kernel (or initrd) file mapped read-only: its clean, file-backed
+/// pages are not billed to the VMM the way a heap copy would be for the
+/// VM's whole life (macOS's allocator keeps large freed blocks dirty).
+#[derive(Debug)]
+pub struct MappedFile {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl MappedFile {
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        let file = File::open(path)?;
+        let len = usize::try_from(file.metadata()?.len()).map_err(std::io::Error::other)?;
+        if len == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty file",
+            ));
+        }
+        // SAFETY: a fresh private read-only mapping of a file we opened.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { ptr: p.cast(), len })
+    }
+}
+
+impl Deref for MappedFile {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        // SAFETY: `ptr..ptr+len` is our read-only mapping until drop.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl Drop for MappedFile {
+    fn drop(&mut self) {
+        // SAFETY: unmaps exactly the mapping created in `open`.
+        unsafe { libc::munmap(self.ptr.cast(), self.len) };
+    }
 }
 
 /// The fields of the 64-byte arm64 Image header the loader needs.
@@ -140,6 +195,18 @@ mod tests {
         v[16..24].copy_from_slice(&image_size.to_le_bytes());
         v[56..60].copy_from_slice(&IMAGE_MAGIC.to_le_bytes());
         v
+    }
+
+    #[test]
+    fn mapped_file_reads_like_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("Image");
+        std::fs::write(&p, image(0, 0x1000, 128)).unwrap();
+        let m = MappedFile::open(&p).unwrap();
+        assert_eq!(m.len(), 128);
+        assert!(ImageHeader::parse(&m).is_ok());
+        std::fs::write(dir.path().join("empty"), b"").unwrap();
+        assert!(MappedFile::open(&dir.path().join("empty")).is_err());
     }
 
     #[test]

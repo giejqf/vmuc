@@ -13,6 +13,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 vm-fdt = "0.3"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
 
