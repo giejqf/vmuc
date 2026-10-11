@@ -103,6 +103,34 @@ fn create_start_shell_stop_delete() {
         "boot-done marker {last:?} is not this boot's ID"
     );
 
+    // A guest web server shows up on the host's loopback by itself.
+    let port = 38_000 + (std::process::id() % 1000) as u16;
+    let serve = format!("nohup python3 -m http.server {port} --directory /etc >/dev/null 2>&1 &");
+    assert!(
+        run(&bin, h, &["shell", "e2e", "--", &serve])
+            .status
+            .success()
+    );
+    let t = Instant::now();
+    let body = loop {
+        if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            use std::io::{Read, Write};
+            s.write_all(b"GET /hostname HTTP/1.0\r\n\r\n").unwrap();
+            let mut body = String::new();
+            let _ = s.read_to_string(&mut body);
+            if body.contains("200") {
+                break body;
+            }
+        }
+        assert!(
+            t.elapsed() < Duration::from_secs(20),
+            "port {port} was never forwarded"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(body.contains("vmuc-"), "{body}");
+    eprintln!("port {port} forwarded after {:?}", t.elapsed());
+
     let out = run(&bin, h, &["delete", "e2e"]);
     assert!(
         !out.status.success(),
