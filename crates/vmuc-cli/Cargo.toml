@@ -35,3 +35,6 @@ path = "../vmuc-config"
 
 [dependencies.vmuc-image]
 path = "../vmuc-image"
+
+[dependencies.vmuc-vmm]
+path = "../vmuc-vmm"

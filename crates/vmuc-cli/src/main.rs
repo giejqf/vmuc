@@ -5,10 +5,12 @@
 //! binary must be the process that owns the Hypervisor.framework VM.
 
 mod agent_client;
+mod boot;
 mod host;
 mod instance;
 mod keys;
 mod proxy;
+mod terminal;
 
 use std::path::PathBuf;
 
@@ -74,6 +76,25 @@ enum Command {
     Template {
         #[command(subcommand)]
         cmd: TemplateCmd,
+    },
+    /// Direct-boot a kernel in the foreground, PL011 on the terminal
+    /// (`Ctrl-A x` quits).
+    #[command(name = "_boot", hide = true)]
+    Boot {
+        #[arg(long)]
+        kernel: PathBuf,
+        #[arg(long)]
+        initrd: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value = "console=ttyAMA0 earlycon=pl011,0x09000000 panic=-1"
+        )]
+        cmdline: String,
+        #[arg(long, default_value_t = 1)]
+        cpus: u32,
+        /// e.g. `1GiB`.
+        #[arg(long, default_value = "1GiB")]
+        memory: String,
     },
     /// Run the VMM for one instance (spawned by `vmuc start`).
     #[command(name = "_vmm", hide = true)]
@@ -198,6 +219,26 @@ fn main() -> anyhow::Result<()> {
                 print!("{}", store.embed(&t)?.to_yaml()?);
             }
         },
+        Command::Boot {
+            kernel,
+            initrd,
+            cmdline,
+            cpus,
+            memory,
+        } => {
+            let memory: vmuc_config::ByteSize = memory.parse()?;
+            let exit = boot::run(&boot::BootArgs {
+                kernel,
+                initrd,
+                cmdline,
+                cpus,
+                memory: memory.0,
+            })?;
+            eprintln!("vmuc: guest exited: {exit:?}");
+            if let vmuc_vmm::VmExit::Crashed(_) = exit {
+                std::process::exit(1);
+            }
+        }
         Command::Vmm { name } => anyhow::bail!("`_vmm {name}`: the VMM arrives in milestone M2"),
         Command::Proxy { name, port, via } => {
             let Some(via) = via else {
