@@ -2,12 +2,15 @@
 //! The passthrough backend: guest file operations carried out on a host
 //! directory, as the user the VMM runs as.
 //!
-//! Nothing may escape the share. Every operation opens the directory
-//! that holds its target with `O_NOFOLLOW_ANY` (no symlink in any
-//! component, macOS 11+) and acts on the final name with the `*at` calls,
-//! which do not follow it either; names from the guest may not contain
-//! `/` or be `.` or `..`. (On a Linux host, where the tests also run, only
-//! the final component is protected.)
+//! Nothing may escape the share. Lookups, attributes and opens, the
+//! frequent calls, take one syscall on the full path with macOS 11's
+//! `AT_SYMLINK_NOFOLLOW_ANY` / `O_NOFOLLOW_ANY`: a symlink in any
+//! component fails with ELOOP (a final one is still stat'ed as itself).
+//! Everything else opens the directory that holds its target with
+//! `O_NOFOLLOW_ANY` and acts on the final name with the `*at` calls,
+//! which do not follow it either. Names from the guest may not contain
+//! `/` or be `.` or `..`. (On a Linux host, where the tests also run,
+//! only the final component is protected.)
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, OsStr};
@@ -32,6 +35,9 @@ const EXCHANGE: u32 = 2;
 
 #[cfg(target_os = "macos")]
 const NOFOLLOW_ANY: i32 = libc::O_NOFOLLOW_ANY;
+/// `fstatat` flag from the SDK's `sys/fcntl.h`; not in the libc crate.
+#[cfg(target_os = "macos")]
+const AT_SYMLINK_NOFOLLOW_ANY: i32 = 0x0800;
 #[cfg(not(target_os = "macos"))]
 const NOFOLLOW_ANY: i32 = 0;
 
@@ -158,6 +164,20 @@ impl Passthrough {
     pub fn stat(&self, rel: &Path) -> R<libc::stat> {
         // SAFETY: zeroed stat is a valid out-buffer.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        #[cfg(target_os = "macos")]
+        {
+            let c = cpath(&self.root.join(rel))?;
+            // SAFETY: valid C string and out-buffer.
+            check(unsafe {
+                libc::fstatat(
+                    libc::AT_FDCWD,
+                    c.as_ptr(),
+                    &raw mut st,
+                    AT_SYMLINK_NOFOLLOW_ANY,
+                )
+            })?;
+        }
+        #[cfg(not(target_os = "macos"))]
         if rel.as_os_str().is_empty() {
             let c = cpath(&self.root)?;
             // SAFETY: valid C string and out-buffer.
@@ -179,6 +199,13 @@ impl Passthrough {
 
     /// Opens a node's file; the final component must not be a symlink.
     pub fn open_rel(&self, rel: &Path, flags: i32, mode: u32) -> R<File> {
+        #[cfg(target_os = "macos")]
+        let fd = {
+            let c = cpath(&self.root.join(rel))?;
+            // SAFETY: valid C string.
+            unsafe { libc::open(c.as_ptr(), flags | NOFOLLOW_ANY | libc::O_CLOEXEC, mode) }
+        };
+        #[cfg(not(target_os = "macos"))]
         let fd = if rel.as_os_str().is_empty() {
             let c = cpath(&self.root)?;
             // SAFETY: valid C string.
