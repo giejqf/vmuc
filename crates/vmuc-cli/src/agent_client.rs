@@ -39,7 +39,7 @@ impl AgentConn for UnixStream {
 /// `tcp:HOST:PORT` or `unix:PATH`.
 pub fn connect(spec: &str) -> anyhow::Result<Box<dyn AgentConn>> {
     let Some((kind, rest)) = spec.split_once(':') else {
-        bail!("agent address must be tcp:HOST:PORT or unix:PATH, got {spec}");
+        bail!("agent address must be tcp:HOST:PORT, unix:PATH or vsock:INSTANCE, got {spec}");
     };
     match kind {
         "tcp" => {
@@ -51,6 +51,14 @@ pub fn connect(spec: &str) -> anyhow::Result<Box<dyn AgentConn>> {
             Ok(Box::new(s))
         }
         "unix" => Ok(Box::new(UnixStream::connect(rest)?)),
+        "vsock" => {
+            let home = vmuc_config::VmucHome::detect()?;
+            let dir = home.instance_dir(rest)?;
+            Ok(Box::new(crate::control::vsock_connect(
+                &dir,
+                vmuc_proto::AGENT_VSOCK_PORT,
+            )?))
+        }
         other => bail!("unknown agent transport {other}"),
     }
 }

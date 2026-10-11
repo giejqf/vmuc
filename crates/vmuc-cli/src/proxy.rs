@@ -9,10 +9,11 @@ use anyhow::bail;
 use vmuc_proto::frame::{read_frame, write_frame};
 use vmuc_proto::{AgentRequest, AgentResponse};
 
-use crate::agent_client;
+use crate::agent_client::AgentConn;
 
-pub fn run(agent_spec: &str, guest_port: u16) -> anyhow::Result<()> {
-    let mut conn = agent_client::connect(agent_spec)?;
+/// Bridges stdio to `127.0.0.1:guest_port` in the guest over an agent
+/// connection (vsock through the VMM, or TCP/unix for the QEMU harness).
+pub fn run(mut conn: Box<dyn AgentConn>, guest_port: u16) -> anyhow::Result<()> {
     write_frame(
         &mut conn,
         &AgentRequest::Tunnel {

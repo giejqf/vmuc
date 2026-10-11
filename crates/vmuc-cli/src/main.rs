@@ -7,9 +7,11 @@
 mod agent_client;
 mod assets;
 mod boot;
+mod control;
 mod host;
 mod instance;
 mod keys;
+mod lifecycle;
 mod proxy;
 mod state;
 mod terminal;
@@ -62,6 +64,32 @@ enum Command {
         /// `LOCATION[:w]`, may repeat.
         #[arg(long)]
         mount: Vec<String>,
+    },
+    /// Start an instance and wait until ssh works.
+    Start {
+        name: String,
+        /// Seconds to wait for the guest to become ready.
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
+    /// Power an instance off (asks the guest; `--force` pulls the plug).
+    Stop {
+        name: String,
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Stop, then start.
+    Restart {
+        name: String,
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
+    /// Open a shell in an instance, or run a command there.
+    Shell {
+        name: String,
+        /// Command to run instead of a login shell.
+        #[arg(last = true)]
+        command: Vec<String>,
     },
     /// List instances.
     #[command(alias = "ls")]
@@ -215,7 +243,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Delete { name } => {
             if state::running_pid(&home.instance_dir(&name)?).is_some() {
-                anyhow::bail!("{name} is running; stop it first");
+                anyhow::bail!("{name} is running; `vmuc stop {name}` first");
             }
             instance::delete(&home, &name)?;
             println!("deleted {name}");
@@ -255,14 +283,25 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Start { name, timeout } => {
+            lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
+        }
+        Command::Stop { name, force } => lifecycle::stop(&home, &name, force)?,
+        Command::Restart { name, timeout } => {
+            lifecycle::stop(&home, &name, false)?;
+            lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
+        }
+        Command::Shell { name, command } => lifecycle::shell(&home, &name, &command)?,
         Command::Vmm { name } => vmm::run(&home, &name)?,
         Command::Proxy { name, port, via } => {
-            let Some(via) = via else {
-                anyhow::bail!(
-                    "`_proxy {name}`: vsock through the VMM arrives in M4; use --via for now"
-                );
+            let conn: Box<dyn agent_client::AgentConn> = match via {
+                Some(via) => agent_client::connect(&via)?,
+                None => Box::new(control::vsock_connect(
+                    &home.instance_dir(&name)?,
+                    vmuc_proto::AGENT_VSOCK_PORT,
+                )?),
             };
-            proxy::run(&via, port)?;
+            proxy::run(conn, port)?;
         }
         Command::Seed {
             name,
