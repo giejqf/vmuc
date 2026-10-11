@@ -8,10 +8,19 @@ Hypervisor.framework directly. What sets it apart is memory: the guest
 sees a generous ceiling, the host pays only for pages the guest touches,
 and memory the guest frees goes back to macOS within seconds.
 
-Status: pre-alpha, milestone M2. The VMM boots the guest kernel to a
-busybox shell on Hypervisor.framework (`vmuc _boot`); disks, networking
-and the instance lifecycle come next. See `docs/plan.md` for the roadmap
-and `docs/feasibility.md` for why this works.
+Status: pre-alpha, milestone M4. Stock Ubuntu cloud images boot on
+vmuc's own VMM and virtio devices, and `vmuc start` / `vmuc shell` work
+end to end over vsock (about 3 s from start to a shell on an M4 Pro).
+Memory reclaim, networking, file sharing and the TUI come next. See
+`docs/plan.md` for the roadmap and `docs/feasibility.md` for why this
+works.
+
+```
+vmuc create ubuntu        # download, verify and convert the cloud image
+vmuc start ubuntu         # boot; returns when ssh works
+vmuc shell ubuntu         # or: vmuc shell ubuntu -- uname -a
+vmuc stop ubuntu
+```
 
 ## Requirements
 
