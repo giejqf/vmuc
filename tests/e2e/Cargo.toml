@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 vmuc-vmm = { path = "../../crates/vmuc-vmm" }
+vmuc-virtio = { path = "../../crates/vmuc-virtio" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

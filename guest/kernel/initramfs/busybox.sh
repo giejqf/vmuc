@@ -13,6 +13,8 @@
 #   (unset)    interactive shell on the console
 #   poweroff   print VMUC_INIT_OK and power off
 #   reboot     print VMUC_INIT_OK and reboot (every boot)
+#   net        bring eth0 up as 10.0.2.15/24, ping 10.0.2.2, print
+#              VMUC_NET_OK or VMUC_NET_FAIL, power off
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -53,6 +55,12 @@ echo "VMUC_INIT_OK uptime=$(cut -d' ' -f1 /proc/uptime) cpus=$(grep -c ^processo
 case "$test" in
     poweroff) poweroff -f ;;
     reboot) reboot -f ;;
+    net)
+        ip link set lo up
+        ip link set eth0 up
+        ip addr add 10.0.2.15/24 dev eth0
+        if ping -c 3 -W 2 10.0.2.2; then echo VMUC_NET_OK; else echo VMUC_NET_FAIL; fi
+        poweroff -f ;;
 esac
 echo "busybox shell; 'poweroff -f' powers off, Ctrl-A x quits vmuc"
 # A session leader opening the console tty gets it as controlling

@@ -1201,6 +1201,7 @@ name = "vmuc-e2e"
 version = "0.1.0-dev"
 dependencies = [
  "tempfile",
+ "vmuc-virtio",
  "vmuc-vmm",
 ]
 
