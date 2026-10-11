@@ -12,6 +12,7 @@ pub mod loader;
 pub mod machine;
 pub mod memory;
 pub mod psci;
+pub mod vcpu;
 
 pub use devices::console::ConsoleOut;
 pub use machine::VmExit;
