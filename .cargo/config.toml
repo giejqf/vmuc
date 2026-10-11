@@ -8,3 +8,7 @@ rustflags = ["-C", "target-feature=+crt-static", "-C", "link-self-contained=yes"
 [alias]
 check-darwin = "check --workspace --all-targets --target aarch64-apple-darwin"
 clippy-darwin = "clippy --workspace --all-targets --target aarch64-apple-darwin -- -D warnings"
+
+# Test and run binaries need com.apple.security.hypervisor to call hv_*.
+[target.aarch64-apple-darwin]
+runner = "scripts/sign-run.sh"
