@@ -2,6 +2,7 @@
 //! Device models, and a byte-stream view of descriptor chains they share.
 
 pub mod blk;
+pub mod console;
 
 pub mod rng;
 
