@@ -9,6 +9,7 @@
 
 pub mod bus;
 pub mod device;
+pub mod devices;
 pub mod irq;
 pub mod mem;
 pub mod mmio;
