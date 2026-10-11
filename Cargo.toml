@@ -12,6 +12,7 @@ members = [
     "crates/vmuc-agent",
     "crates/vmuc-tui",
     "crates/vmuc-cli",
+    "tests/e2e",
 ]
 
 [workspace.package]

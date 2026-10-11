@@ -8,8 +8,8 @@ CARGO ?= cargo
 VMUC_MAC ?= $(shell cat .vmuc-mac 2>/dev/null)
 MAC_DIR ?= ~/vmuc
 
-.PHONY: fmt clippy test check-darwin check kernel kernel-test agent \
-        mac-sync mac-test mac-e2e bench sign clean
+.PHONY: fmt clippy test check-darwin check kernel kernel-test agent busybox \
+        e2e bench-local mac-sync mac-test mac-e2e bench sign clean
 
 fmt:
 	$(CARGO) fmt --all --check
@@ -33,6 +33,19 @@ kernel:
 kernel-test: kernel
 	guest/kernel/qemu-boot-test.sh
 
+## Busybox initramfs for HV bring-up and boot benchmarks (macOS or Linux).
+busybox:
+	guest/kernel/initramfs/busybox.sh
+
+## On an Apple silicon Mac: boot real VMs. The cargo runner signs test
+## binaries with the hypervisor entitlement.
+e2e:
+	$(CARGO) test -p vmuc-e2e -- --ignored --test-threads=1
+
+bench-local:
+	@test -n "$(NAME)" || { echo "usage: make bench-local NAME=<tests/bench/NAME>"; exit 1; }
+	tests/bench/$(NAME)/run.sh
+
 ## Guest agent: static musl binary for arm64.
 agent:
 	$(CARGO) build -p vmuc-agent --release --target aarch64-unknown-linux-musl
@@ -47,7 +60,7 @@ mac-test: mac-sync
 	ssh $(VMUC_MAC) 'cd $(MAC_DIR) && source ~/.cargo/env && cargo test --workspace && make sign'
 
 mac-e2e: mac-sync
-	ssh $(VMUC_MAC) 'cd $(MAC_DIR) && source ~/.cargo/env && cargo build && make sign && cargo test -p vmuc-e2e -- --ignored'
+	ssh $(VMUC_MAC) 'cd $(MAC_DIR) && source ~/.cargo/env && make e2e'
 
 bench: mac-sync
 	@test -n "$(NAME)" || { echo "usage: make bench NAME=<tests/bench/NAME>"; exit 1; }
