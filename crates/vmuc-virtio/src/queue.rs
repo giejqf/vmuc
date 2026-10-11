@@ -297,8 +297,24 @@ pub(crate) mod testing {
 
     impl Driver {
         pub fn new(size: u16, event_idx: bool) -> Self {
-            let mem = GuestMemory::from_vec(BASE, vec![0; 1 << 20]);
-            let desc = BASE;
+            Self::in_region(
+                GuestMemory::from_vec(BASE, vec![0; 1 << 20]),
+                BASE,
+                size,
+                event_idx,
+            )
+        }
+
+        /// `n` queues sharing one guest memory, each in its own 1 MiB region.
+        pub fn many(n: usize, size: u16, event_idx: bool) -> Vec<Self> {
+            let mem = GuestMemory::from_vec(BASE, vec![0; n << 20]);
+            (0..n)
+                .map(|i| Self::in_region(mem.clone(), BASE + ((i as u64) << 20), size, event_idx))
+                .collect()
+        }
+
+        fn in_region(mem: GuestMemory, base: Gpa, size: u16, event_idx: bool) -> Self {
+            let desc = base;
             let avail = desc + 16 * u64::from(size);
             let used = (avail + 6 + 2 * u64::from(size)).next_multiple_of(4);
             let heap = (used + 6 + 8 * u64::from(size)).next_multiple_of(4096);
