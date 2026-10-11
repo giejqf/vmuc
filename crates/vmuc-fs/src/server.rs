@@ -87,7 +87,7 @@ impl Server {
                 return Err(linux::ENOSYS);
             }
             opcode::INIT => return init_reply(r).map_err(bad),
-            opcode::DESTROY | opcode::SYNCFS | opcode::INTERRUPT | opcode::FLUSH => {}
+            opcode::DESTROY | opcode::SYNCFS | opcode::INTERRUPT => {}
             opcode::LOOKUP => {
                 let name = r.cstr().map_err(bad)?;
                 return Ok(entry(fs.lookup_rel(fs.child(h.nodeid, name)?)?));
@@ -291,6 +291,9 @@ impl Server {
                 }
                 w.u64(off as u64);
             }
+            // FLUSH among them: writes reach the host file at once and
+            // locks are the guest's, so a flush has nothing to do, and
+            // ENOSYS spares every close() the round trip from then on.
             _ => return Err(linux::ENOSYS),
         }
         Ok(w.0)

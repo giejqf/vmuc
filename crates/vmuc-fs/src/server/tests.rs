@@ -291,6 +291,7 @@ fn forget_releases_nodes_and_unknown_opcodes_are_enosys() {
     assert!(f.srv.handle(&req).is_none(), "FORGET gets no reply");
     assert!(f.srv.fs().rel(node).is_err());
     assert_eq!(f.call(9999, ROOT_ID, &[]).0, linux::ENOSYS);
+    assert_eq!(f.call(opcode::FLUSH, node, &[0; 24]).0, linux::ENOSYS);
 }
 
 #[test]
