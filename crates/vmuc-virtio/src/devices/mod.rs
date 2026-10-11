@@ -5,6 +5,7 @@ pub mod blk;
 pub mod console;
 
 pub mod rng;
+pub mod vsock;
 
 use crate::mem::{Gpa, GuestMemory, MemResult};
 use crate::queue::DescChain;
