@@ -51,7 +51,9 @@ pub fn align_inward(start: u64, len: u64) -> Option<(u64, u64)> {
     let end = start.checked_add(len)?;
     let a_start = start.div_ceil(page) * page;
     let a_end = (end / page) * page;
-    (a_end > a_start).then_some((a_start, a_end - a_start))
+    // `then`, not `then_some`: the length must not be computed (and
+    // underflow) when the range sits strictly inside one host page.
+    (a_end > a_start).then(|| (a_start, a_end - a_start))
 }
 
 #[cfg(test)]
@@ -80,5 +82,8 @@ mod tests {
         assert_eq!(align_inward(p, 4096), None);
         assert_eq!(align_inward(p + 4096, 3 * p), Some((2 * p, 2 * p)));
         assert_eq!(align_inward(u64::MAX - 10, 100), None);
+        // Strictly inside one host page: nothing, and no underflow.
+        assert_eq!(align_inward(4096, 4096), None);
+        assert_eq!(align_inward(p + 4096, 0x2000), None);
     }
 }
