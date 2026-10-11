@@ -95,6 +95,12 @@ enum Command {
         /// e.g. `1GiB`.
         #[arg(long, default_value = "1GiB")]
         memory: String,
+        /// Block device `PATH` or `PATH:ro`, in slot order; may repeat.
+        #[arg(long)]
+        disk: Vec<String>,
+        /// Add a virtio-console (hvc0) and send the keyboard there.
+        #[arg(long)]
+        hvc: bool,
     },
     /// Run the VMM for one instance (spawned by `vmuc start`).
     #[command(name = "_vmm", hide = true)]
@@ -225,6 +231,8 @@ fn main() -> anyhow::Result<()> {
             cmdline,
             cpus,
             memory,
+            disk,
+            hvc,
         } => {
             let memory: vmuc_config::ByteSize = memory.parse()?;
             let exit = boot::run(&boot::BootArgs {
@@ -233,6 +241,8 @@ fn main() -> anyhow::Result<()> {
                 cmdline,
                 cpus,
                 memory: memory.0,
+                disks: disk.iter().map(|d| boot::parse_disk(d)).collect(),
+                hvc,
             })?;
             eprintln!("vmuc: guest exited: {exit:?}");
             if let vmuc_vmm::VmExit::Crashed(_) = exit {

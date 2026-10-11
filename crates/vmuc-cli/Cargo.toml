@@ -38,3 +38,6 @@ path = "../vmuc-image"
 
 [dependencies.vmuc-vmm]
 path = "../vmuc-vmm"
+
+[dependencies.vmuc-virtio]
+path = "../vmuc-virtio"
