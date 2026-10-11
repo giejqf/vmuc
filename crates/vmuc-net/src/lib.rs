@@ -4,5 +4,6 @@
 //! forwarder. The user-space NAT is v0.2 work.
 
 pub mod helper;
+pub mod launch;
 #[cfg(target_os = "macos")]
 pub mod vmnet;
