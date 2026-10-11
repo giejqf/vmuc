@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! M4: `vmuc create`, `start`, `shell`, `stop`, `delete` on a real Ubuntu
-//! cloud image, through the signed `vmuc` binary, in a throwaway
+//! cloud image (with M6 port forwarding and M7 virtiofs shares), through
+//! the signed `vmuc` binary, in a throwaway
 //! VMUC_HOME (the image download cache is shared, so only the first run
 //! downloads). Needs Apple silicon, the kernel artifact and the musl
 //! agent (`make agent`); see the crate docs.
@@ -54,33 +55,39 @@ fn run(bin: &Path, home: &Path, args: &[&str]) -> Output {
 #[ignore = "boots Ubuntu: Apple silicon only"]
 fn create_start_shell_stop_delete() {
     let _vm = vmuc_e2e::vm_lock();
-    let bin = vmuc();
+    let bin = &vmuc();
     // A short home: unix socket paths are limited to 104 bytes.
     let home = tempfile::Builder::new()
         .prefix("vmuc-e2e")
         .tempdir_in("/tmp")
         .unwrap();
     let h = home.path();
+    // Mounted at the same path in the guest; not under /tmp, which is a
+    // symlink on macOS.
+    let share = tempfile::tempdir_in(root().join("target")).unwrap();
+    std::fs::write(share.path().join("from-host"), "host\n").unwrap();
+    let mount = format!("{}:w", share.path().display());
 
     let out = run(
-        &bin,
+        bin,
         h,
         &[
-            "create", "ubuntu", "--name", "e2e", "--cpus", "2", "--memory", "2GiB",
+            "create", "ubuntu", "--name", "e2e", "--cpus", "2", "--memory", "2GiB", "--mount",
+            &mount,
         ],
     );
     assert!(out.status.success(), "create failed");
 
     let t = Instant::now();
-    let out = run(&bin, h, &["start", "e2e", "--timeout", "180"]);
+    let out = run(bin, h, &["start", "e2e", "--timeout", "180"]);
     assert!(out.status.success(), "start failed");
     eprintln!("start took {:?}", t.elapsed());
 
-    let out = run(&bin, h, &["list"]);
+    let out = run(bin, h, &["list"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("Running"));
 
     let out = run(
-        &bin,
+        bin,
         h,
         &[
             "shell",
@@ -103,11 +110,54 @@ fn create_start_shell_stop_delete() {
         "boot-done marker {last:?} is not this boot's ID"
     );
 
-    // A guest web server shows up on the host's loopback by itself.
+    check_shares(bin, h, share.path());
+
+    check_port_forward(bin, h);
+
+    let out = run(bin, h, &["delete", "e2e"]);
+    assert!(
+        !out.status.success(),
+        "delete must refuse a running instance"
+    );
+
+    let t = Instant::now();
+    let out = run(bin, h, &["stop", "e2e"]);
+    assert!(out.status.success(), "stop failed");
+    assert!(t.elapsed() < Duration::from_secs(90));
+    let out = run(bin, h, &["list"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Stopped"));
+
+    let out = run(bin, h, &["delete", "e2e"]);
+    assert!(out.status.success(), "delete failed");
+}
+
+/// virtiofs: the writable share both ways, the default ~ share read-only.
+fn check_shares(bin: &Path, h: &Path, share: &Path) {
+    let script = format!(
+        "set -e; cd {share}; cat from-host; mkdir d; echo guest > d/from-guest; mv d d2; \
+         if touch {home}/.vmuc-e2e 2>/dev/null; then echo home-writable; else echo home-ro; fi",
+        share = share.display(),
+        home = std::env::var("HOME").unwrap(),
+    );
+    let out = run(bin, h, &["shell", "e2e", "--", &script]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "share commands failed");
+    assert!(
+        stdout.contains("host") && stdout.contains("home-ro"),
+        "{stdout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(share.join("d2/from-guest")).unwrap(),
+        "guest\n"
+    );
+}
+
+/// A guest web server shows up on the host's loopback by itself.
+fn check_port_forward(bin: &Path, h: &Path) {
     let port = 38_000 + (std::process::id() % 1000) as u16;
     let serve = format!("nohup python3 -m http.server {port} --directory /etc >/dev/null 2>&1 &");
     assert!(
-        run(&bin, h, &["shell", "e2e", "--", &serve])
+        run(bin, h, &["shell", "e2e", "--", &serve])
             .status
             .success()
     );
@@ -130,20 +180,4 @@ fn create_start_shell_stop_delete() {
     };
     assert!(body.contains("vmuc-"), "{body}");
     eprintln!("port {port} forwarded after {:?}", t.elapsed());
-
-    let out = run(&bin, h, &["delete", "e2e"]);
-    assert!(
-        !out.status.success(),
-        "delete must refuse a running instance"
-    );
-
-    let t = Instant::now();
-    let out = run(&bin, h, &["stop", "e2e"]);
-    assert!(out.status.success(), "stop failed");
-    assert!(t.elapsed() < Duration::from_secs(90));
-    let out = run(&bin, h, &["list"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("Stopped"));
-
-    let out = run(&bin, h, &["delete", "e2e"]);
-    assert!(out.status.success(), "delete failed");
 }
