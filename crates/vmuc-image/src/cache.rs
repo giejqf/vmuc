@@ -228,8 +228,16 @@ fn fetch_http(
     out: &mut impl Write,
     progress: &mut impl FnMut(u64, Option<u64>),
 ) -> Result<String> {
+    // ureq defaults to rustls; macOS builds carry native-tls instead (see
+    // Cargo.toml), and must say so or the first https request panics.
+    let provider = if cfg!(target_os = "macos") {
+        ureq::tls::TlsProvider::NativeTls
+    } else {
+        ureq::tls::TlsProvider::Rustls
+    };
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
+            .tls_config(ureq::tls::TlsConfig::builder().provider(provider).build())
             .user_agent(concat!("vmuc/", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(std::time::Duration::from_secs(30)))
             .timeout_recv_response(Some(std::time::Duration::from_secs(60)))
