@@ -374,7 +374,9 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
     };
     // Free page reporting's delay is hard-coded to 2 s in Linux 6.18
     // (`mm/page_reporting.c`); there is no command-line knob for it.
-    let mut cmdline = format!("console=hvc0 earlycon=pl011,0x09000000 root={root_arg} rw panic=-1");
+    // No earlycon: every early-console byte is a PL011 exit, and hvc0
+    // replays the kernel log once it is up.
+    let mut cmdline = format!("console=hvc0 root={root_arg} rw panic=-1");
     if let Some(extra) = resolved
         .images
         .first()
@@ -404,11 +406,28 @@ pub fn delete(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     if !dir.exists() {
         bail!("instance {name:?} does not exist");
     }
-    if dir.join(files::VMM_PID).exists() {
-        bail!("instance {name:?} has a vmm.pid; stop it first");
-    }
     fs::remove_dir_all(&dir).with_context(|| dir.display().to_string())?;
     Ok(())
+}
+
+/// `Stopped` without a live VMM, else the phase its latest event shows.
+pub fn status(dir: &Path) -> &'static str {
+    use vmuc_proto::EventKind;
+    if crate::state::running_pid(dir).is_none() {
+        return "Stopped";
+    }
+    let events = crate::state::read_events(dir);
+    match events
+        .iter()
+        .rev()
+        .map(|e| &e.kind)
+        .find(|k| !matches!(k, EventKind::Requirement { .. }))
+    {
+        Some(EventKind::Running { .. }) => "Running",
+        Some(EventKind::Degraded { .. }) => "Degraded",
+        Some(EventKind::Exiting { .. }) => "Stopping",
+        _ => "Starting",
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -427,11 +446,7 @@ pub fn list(home: &VmucHome) -> anyhow::Result<Vec<ListRow>> {
         let inst = Instance::open(home, &name)?;
         let r = inst.resolved(home)?;
         rows.push(ListRow {
-            status: if inst.dir.join(files::VMM_PID).exists() {
-                "Unknown"
-            } else {
-                "Stopped"
-            },
+            status: status(&inst.dir),
             name,
             cpus: r.cpus,
             memory: r.memory.to_string(),

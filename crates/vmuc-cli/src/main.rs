@@ -5,12 +5,15 @@
 //! binary must be the process that owns the Hypervisor.framework VM.
 
 mod agent_client;
+mod assets;
 mod boot;
 mod host;
 mod instance;
 mod keys;
 mod proxy;
+mod state;
 mod terminal;
+mod vmm;
 
 use std::path::PathBuf;
 
@@ -211,6 +214,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Delete { name } => {
+            if state::running_pid(&home.instance_dir(&name)?).is_some() {
+                anyhow::bail!("{name} is running; stop it first");
+            }
             instance::delete(&home, &name)?;
             println!("deleted {name}");
         }
@@ -249,7 +255,7 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Vmm { name } => anyhow::bail!("`_vmm {name}`: the VMM arrives in milestone M2"),
+        Command::Vmm { name } => vmm::run(&home, &name)?,
         Command::Proxy { name, port, via } => {
             let Some(via) = via else {
                 anyhow::bail!(
