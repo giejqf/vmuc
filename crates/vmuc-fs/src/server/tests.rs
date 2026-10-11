@@ -232,6 +232,18 @@ fn setattr_truncates_and_chmods() {
 }
 
 #[test]
+fn open_honours_the_guests_nofollow() {
+    let mut f = fs(false);
+    std::fs::write(f.path("plain"), b"x").unwrap();
+    let (node, _, _) = f.lookup(ROOT_ID, "plain").unwrap();
+    // Linux arm64 O_RDONLY | O_NOFOLLOW, as git opens .gitignore.
+    let nofollow: u32 = 0o100_000;
+    let mut open = Writer::default();
+    open.u32(nofollow).u32(0);
+    f.ok(opcode::OPEN, node, &open.0);
+}
+
+#[test]
 fn symlinks_are_readable_but_never_traversed() {
     let mut f = fs(false);
     let mut s = Fs::name("esc");

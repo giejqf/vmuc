@@ -202,8 +202,11 @@ impl Passthrough {
         #[cfg(target_os = "macos")]
         let fd = {
             let c = cpath(&self.root.join(rel))?;
+            // O_NOFOLLOW_ANY covers the guest's O_NOFOLLOW (git opens
+            // .gitignore with it), and macOS refuses the two together.
+            let flags = (flags & !libc::O_NOFOLLOW) | NOFOLLOW_ANY | libc::O_CLOEXEC;
             // SAFETY: valid C string.
-            unsafe { libc::open(c.as_ptr(), flags | NOFOLLOW_ANY | libc::O_CLOEXEC, mode) }
+            unsafe { libc::open(c.as_ptr(), flags, mode) }
         };
         #[cfg(not(target_os = "macos"))]
         let fd = if rel.as_os_str().is_empty() {
