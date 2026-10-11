@@ -115,6 +115,16 @@ impl Ctx<'_> {
     /// Handles one trapped exception; `Ok(true)` when the vCPU powered off.
     fn exception(&mut self, class: ExceptionClass, syndrome: u64) -> Result<bool, VmExit> {
         match class {
+            // RAM is only ever unmapped for the microseconds a release
+            // takes (the guest promised not to touch reported pages, but a
+            // stray access must not read zeros or lose a write): retry.
+            ExceptionClass::DataAbort(MmioInfo { address, .. })
+            | ExceptionClass::InstructionAbort { address, .. }
+                if self.m.is_ram(address) =>
+            {
+                self.m.counts.reclaim_faults.fetch_add(1, Ordering::Relaxed);
+                std::thread::yield_now();
+            }
             ExceptionClass::DataAbort(m) => {
                 self.m.counts.mmio.fetch_add(1, Ordering::Relaxed);
                 self.hv(self.mmio(&m))?;

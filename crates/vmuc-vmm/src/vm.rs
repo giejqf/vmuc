@@ -13,11 +13,12 @@
 //! The teardown order is a contract (AGENTS.md); `Drop` enforces it even
 //! when boot fails halfway.
 
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock, mpsc};
 use std::thread::{self, JoinHandle};
 
 use tracing::{debug, info};
 use vmuc_hv::{Gic, GicConfig, HvError, HvVm, ReservedIntid};
+use vmuc_virtio::devices::balloon::{Balloon, BalloonHandle, Reclaim};
 use vmuc_virtio::{BusDevice, GuestMemory, Interrupt, IrqStatus, MmioTransport, VirtioDevice};
 
 use crate::bus::{MmioBus, Overlap};
@@ -31,7 +32,8 @@ use crate::layout::{
 };
 use crate::loader::{BootLayout, ImageHeader, LoadError};
 use crate::machine::{Machine, VmExit};
-use crate::memory::GuestRam;
+use crate::memory::reclaim::HvStage2;
+use crate::memory::{GuestRam, ReclaimError, ReclaimStats, Reclaimer};
 use crate::vcpu::run_vcpu;
 
 #[derive(Debug, thiserror::Error)]
@@ -70,10 +72,40 @@ impl Interrupt for SpiLine {
     }
 }
 
+/// The balloon's way back to the VMM: releases through the reclaimer,
+/// and a hole in guest RAM stops the VM.
+struct VmReclaim {
+    reclaimer: Reclaimer,
+    machine: Arc<OnceLock<Arc<Machine>>>,
+}
+
+impl Reclaim for VmReclaim {
+    fn release(&self, gpa: u64, len: u64) -> Result<u64, String> {
+        match self.reclaimer.release(gpa, len) {
+            Ok(n) => Ok(n),
+            // Nothing was unmapped: acknowledging is harmless.
+            Err(e @ ReclaimError::OutOfRange { .. }) => {
+                tracing::warn!("balloon: {e}");
+                Ok(0)
+            }
+            Err(e) => {
+                if let (ReclaimError::Hole { .. }, Some(m)) = (&e, self.machine.get()) {
+                    m.request_exit(VmExit::Crashed(e.to_string()));
+                }
+                Err(e.to_string())
+            }
+        }
+    }
+}
+
 pub struct VmBuilder {
     config: VmConfig,
     bus: MmioBus,
     transports: Vec<Arc<MmioTransport>>,
+    /// Set once the machine exists, for device paths that must stop it.
+    machine: Arc<OnceLock<Arc<Machine>>>,
+    /// Open while releases may run; closed before `hv_vm_destroy`.
+    reclaim_gate: Arc<RwLock<bool>>,
     gicr_frame: u64,
     gic: Gic,
     ram: GuestRam,
@@ -113,6 +145,8 @@ impl VmBuilder {
             config,
             bus: MmioBus::default(),
             transports: Vec::new(),
+            machine: Arc::new(OnceLock::new()),
+            reclaim_gate: Arc::new(RwLock::new(true)),
             gicr_frame,
             gic,
             ram,
@@ -171,6 +205,32 @@ impl VmBuilder {
         Ok(transport)
     }
 
+    /// Adds the balloon with free page reporting, wired to a reclaimer
+    /// over this VM's RAM. Returns its control handle and the counters.
+    pub fn add_balloon(&mut self) -> Result<(BalloonHandle, Arc<ReclaimStats>), VmError> {
+        let stats = Arc::new(ReclaimStats::default());
+        // SAFETY: the host pointer and size are guest RAM's mapping, which
+        // the Vm keeps until after it closes `reclaim_gate`.
+        let reclaimer = unsafe {
+            Reclaimer::new(
+                self.ram.host_ptr(),
+                self.ram.base(),
+                self.ram.size(),
+                Arc::clone(&self.reclaim_gate),
+                Arc::clone(&stats),
+                Box::new(HvStage2),
+            )
+        };
+        let reclaim = Arc::new(VmReclaim {
+            reclaimer,
+            machine: Arc::clone(&self.machine),
+        });
+        let balloon = Balloon::new(reclaim)?;
+        let handle = balloon.handle();
+        self.add_virtio(Box::new(balloon))?;
+        Ok((handle, stats))
+    }
+
     /// Loads the kernel, writes the device tree and starts the vCPUs.
     pub fn boot(self, kernel: &[u8], initrd: Option<&[u8]>) -> Result<Vm, VmError> {
         let header = ImageHeader::parse(kernel)?;
@@ -206,11 +266,14 @@ impl VmBuilder {
         mem.write(layout.fdt, &blob).map_err(LoadError::from)?;
         debug!(?layout, fdt_bytes = blob.len(), "guest loaded");
 
-        let machine = Arc::new(Machine::new(self.config.cpus, self.bus));
+        let ram = RAM_BASE..RAM_BASE + self.config.ram_size;
+        let machine = Arc::new(Machine::new(self.config.cpus, self.bus).with_ram(ram));
+        let _ = self.machine.set(Arc::clone(&machine));
         let mut vm = Vm {
             machine,
             vcpu_threads: Vec::new(),
             transports: self.transports,
+            reclaim_gate: self.reclaim_gate,
             _gic: self.gic,
             _hv: self.hv,
             _ram: self.ram,
@@ -247,6 +310,7 @@ pub struct Vm {
     /// Shut down after the vCPUs, so device workers stop touching guest
     /// memory before the VM and RAM go away.
     transports: Vec<Arc<MmioTransport>>,
+    reclaim_gate: Arc<RwLock<bool>>,
     // Dropped in declaration order after `Drop::drop` has joined the
     // vCPUs: GIC, then the VM (hv_vm_destroy), then RAM (munmap).
     _gic: Gic,
@@ -286,6 +350,11 @@ impl Drop for Vm {
         for t in self.transports.drain(..) {
             t.shutdown();
         }
+        // No release may be half done when the VM goes away.
+        *self
+            .reclaim_gate
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = false;
         let c = &self.machine.counts;
         let n = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed);
         debug!(

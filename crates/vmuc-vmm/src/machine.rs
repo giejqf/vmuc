@@ -4,6 +4,7 @@
 //! the one reason the VM stops. Every power-state transition happens
 //! here, so the PSCI answers are testable without a hypervisor.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -47,12 +48,15 @@ pub struct ExitCounts {
     pub sysreg: AtomicU64,
     pub hvc: AtomicU64,
     pub canceled: AtomicU64,
+    /// Guest touched RAM mid-release (unmapped for microseconds): retried.
+    pub reclaim_faults: AtomicU64,
     pub other: AtomicU64,
 }
 
 /// State every vCPU thread and the controlling thread share.
 pub struct Machine {
     bus: MmioBus,
+    ram: Range<u64>,
     cpus: Vec<CpuSlot>,
     /// Framework handles, for `hv_vcpus_exit`; filled as vCPUs are created.
     ids: Mutex<Vec<u64>>,
@@ -79,6 +83,7 @@ impl Machine {
     pub fn new(cpus: u32, bus: MmioBus) -> Self {
         Self {
             bus,
+            ram: 0..0,
             cpus: (0..cpus)
                 .map(|_| CpuSlot {
                     power: Mutex::new(Power::Off),
@@ -91,6 +96,17 @@ impl Machine {
             exited: Condvar::new(),
             counts: ExitCounts::default(),
         }
+    }
+
+    /// Guest RAM's IPA range: aborts there are reclaim races, not MMIO.
+    #[must_use]
+    pub fn with_ram(mut self, ram: Range<u64>) -> Self {
+        self.ram = ram;
+        self
+    }
+
+    pub fn is_ram(&self, addr: u64) -> bool {
+        self.ram.contains(&addr)
     }
 
     pub fn bus(&self) -> &MmioBus {

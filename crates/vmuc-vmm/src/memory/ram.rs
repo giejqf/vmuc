@@ -83,6 +83,11 @@ impl GuestRam {
         self.mapping.len as u64
     }
 
+    /// Start of the host mapping, for the reclaimer.
+    pub(crate) fn host_ptr(&self) -> *mut u8 {
+        self.mapping.ptr
+    }
+
     /// A view for loaders and device models; keeps the mapping alive.
     pub fn memory(&self) -> GuestMemory {
         // SAFETY: the mapping lives as long as the Arc in the view and is
