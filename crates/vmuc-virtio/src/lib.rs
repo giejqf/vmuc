@@ -1,4 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Split virtqueues, virtio-mmio transport and device models (console, blk, net, vsock, rng, balloon, fs).
+//! Split virtqueues, virtio-mmio transport and device models (console,
+//! blk, net, vsock, rng, balloon, fs), plus the primitives every device
+//! uses: a view of guest memory, an interrupt line, and the MMIO device
+//! trait.
 //!
-//! Skeleton; see `docs/plan.md` for the milestone that fills it in.
+//! Device models take a [`GuestMemory`] and their queues, never a VM
+//! handle, so they are unit-tested against byte buffers on any host.
+
+pub mod bus;
+pub mod irq;
+pub mod mem;
+
+pub use bus::BusDevice;
+pub use irq::{Interrupt, TestIrq};
+pub use mem::{Gpa, GuestMemory, MemError, MemResult, Pod};
