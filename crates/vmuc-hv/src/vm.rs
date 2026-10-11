@@ -94,6 +94,27 @@ impl HvVm {
         error::check(unsafe { ffi::hv_vm_unmap(ipa, size) })
     }
 
+    /// [`HvVm::map_memory`] for a thread that does not hold the handle
+    /// (the memory reclaimer): the framework's VM is process-global.
+    ///
+    /// # Safety
+    /// As for [`HvVm::map_memory`], and a VM must exist.
+    pub unsafe fn remap(
+        host_addr: *mut u8,
+        ipa: u64,
+        size: usize,
+        perm: MemoryPermission,
+    ) -> HvResult<()> {
+        // SAFETY: caller contract above.
+        error::check(unsafe { ffi::hv_vm_map(host_addr, ipa, size, perm.bits()) })
+    }
+
+    /// [`HvVm::unmap_memory`] without the handle; see [`HvVm::remap`].
+    pub fn unmap(ipa: u64, size: usize) -> HvResult<()> {
+        // SAFETY: the framework validates the range.
+        error::check(unsafe { ffi::hv_vm_unmap(ipa, size) })
+    }
+
     /// Changes permissions on a mapped range.
     pub fn protect_memory(&self, ipa: u64, size: usize, perm: MemoryPermission) -> HvResult<()> {
         // SAFETY: the framework validates the range.
