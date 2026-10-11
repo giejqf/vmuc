@@ -1,0 +1,428 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The virtio-mmio transport, version 2 (virtio 1.2 §4.2.2).
+//!
+//! Register accesses arrive on vCPU threads. Everything except
+//! `QueueNotify` goes through one lock (configuration, not the data
+//! path); `QueueNotify` rings the device's doorbell without it.
+
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use tracing::{debug, warn};
+
+use crate::bus::{BusDevice, le_value, put_le};
+use crate::device::{Activation, Doorbell, IrqStatus, VirtioDevice, features};
+use crate::mem::GuestMemory;
+use crate::queue::Queue;
+
+const MAGIC: u64 = 0x000;
+const VERSION: u64 = 0x004;
+const DEVICE_ID: u64 = 0x008;
+const VENDOR_ID: u64 = 0x00c;
+const DEVICE_FEATURES: u64 = 0x010;
+const DEVICE_FEATURES_SEL: u64 = 0x014;
+const DRIVER_FEATURES: u64 = 0x020;
+const DRIVER_FEATURES_SEL: u64 = 0x024;
+const QUEUE_SEL: u64 = 0x030;
+const QUEUE_NUM_MAX: u64 = 0x034;
+const QUEUE_NUM: u64 = 0x038;
+const QUEUE_READY: u64 = 0x044;
+const QUEUE_NOTIFY: u64 = 0x050;
+const INTERRUPT_STATUS: u64 = 0x060;
+const INTERRUPT_ACK: u64 = 0x064;
+const STATUS: u64 = 0x070;
+const QUEUE_DESC_LOW: u64 = 0x080;
+const QUEUE_DESC_HIGH: u64 = 0x084;
+const QUEUE_DRIVER_LOW: u64 = 0x090;
+const QUEUE_DRIVER_HIGH: u64 = 0x094;
+const QUEUE_DEVICE_LOW: u64 = 0x0a0;
+const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
+const SHM_SEL: u64 = 0x0ac;
+const SHM_LEN_LOW: u64 = 0x0b0;
+const SHM_LEN_HIGH: u64 = 0x0b4;
+const CONFIG_GENERATION: u64 = 0x0fc;
+const CONFIG: u64 = 0x100;
+
+const MAGIC_VALUE: u32 = 0x7472_6976; // "virt"
+/// "VMUC", little-endian.
+const VENDOR: u32 = 0x4355_4d56;
+
+pub mod status {
+    pub const ACKNOWLEDGE: u32 = 1;
+    pub const DRIVER: u32 = 2;
+    pub const DRIVER_OK: u32 = 4;
+    pub const FEATURES_OK: u32 = 8;
+    pub const DEVICE_NEEDS_RESET: u32 = 64;
+    pub const FAILED: u32 = 128;
+}
+
+struct State {
+    device: Box<dyn VirtioDevice>,
+    status: u32,
+    device_features: u64,
+    device_features_sel: u32,
+    driver_features: u64,
+    driver_features_sel: u32,
+    queue_sel: u32,
+    queues: Vec<Queue>,
+    config_generation: u32,
+    active: bool,
+}
+
+pub struct MmioTransport {
+    state: Mutex<State>,
+    doorbell: Arc<dyn Doorbell>,
+    irq: Arc<IrqStatus>,
+    mem: GuestMemory,
+}
+
+impl std::fmt::Debug for MmioTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.lock();
+        f.debug_struct("MmioTransport")
+            .field("device_type", &s.device.device_type())
+            .field("status", &s.status)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MmioTransport {
+    pub fn new(device: Box<dyn VirtioDevice>, mem: GuestMemory, irq: Arc<IrqStatus>) -> Self {
+        let queues = device
+            .queue_max_sizes()
+            .into_iter()
+            .map(Queue::new)
+            .collect();
+        let device_features = device.features() | features::VERSION_1;
+        Self {
+            doorbell: device.doorbell(),
+            state: Mutex::new(State {
+                device,
+                status: 0,
+                device_features,
+                device_features_sel: 0,
+                driver_features: 0,
+                driver_features_sel: 0,
+                queue_sel: 0,
+                queues,
+                config_generation: 0,
+                active: false,
+            }),
+            irq,
+            mem,
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Stops the device for good (VM teardown): its workers stop touching
+    /// guest memory before this returns.
+    pub fn shutdown(&self) {
+        let mut s = self.lock();
+        if s.active {
+            s.device.reset();
+            s.active = false;
+        }
+    }
+
+    fn reset(&self, s: &mut State) {
+        if s.active {
+            s.device.reset();
+        }
+        s.active = false;
+        s.status = 0;
+        s.driver_features = 0;
+        s.device_features_sel = 0;
+        s.driver_features_sel = 0;
+        s.queue_sel = 0;
+        s.queues.iter_mut().for_each(Queue::reset);
+        self.irq.ack(u32::MAX);
+    }
+
+    fn set_status(&self, s: &mut State, v: u32) {
+        if v == 0 {
+            debug!(device = s.device.device_type(), "driver reset");
+            return self.reset(s);
+        }
+        let mut v = v;
+        if v & status::FEATURES_OK != 0
+            && s.status & status::FEATURES_OK == 0
+            && (s.driver_features & !s.device_features != 0
+                || s.driver_features & features::VERSION_1 == 0)
+        {
+            warn!(
+                device = s.device.device_type(),
+                driver = format_args!("{:#x}", s.driver_features),
+                "driver accepted features the device does not offer"
+            );
+            v &= !status::FEATURES_OK;
+        }
+        s.status = v;
+        if v & status::DRIVER_OK != 0 && v & status::FEATURES_OK != 0 && !s.active {
+            self.activate(s);
+        }
+    }
+
+    fn activate(&self, s: &mut State) {
+        let event_idx = s.driver_features & features::RING_EVENT_IDX != 0;
+        for q in &mut s.queues {
+            q.event_idx = event_idx;
+        }
+        let bad = s.queues.iter().position(|q| q.ready && !q.is_valid());
+        let result = match bad {
+            Some(i) => Err(format!("queue {i} is misconfigured")),
+            None => s.device.activate(Activation {
+                mem: self.mem.clone(),
+                queues: s.queues.clone(),
+                irq: Arc::clone(&self.irq),
+                features: s.driver_features,
+            }),
+        };
+        match result {
+            Ok(()) => s.active = true,
+            Err(e) => {
+                warn!(device = s.device.device_type(), "activation failed: {e}");
+                s.status |= status::DEVICE_NEEDS_RESET;
+                self.irq.signal_config();
+            }
+        }
+    }
+
+    fn queue(s: &mut State) -> Option<&mut Queue> {
+        let sel = s.queue_sel as usize;
+        s.queues.get_mut(sel)
+    }
+}
+
+fn set_low(v: &mut u64, low: u32) {
+    *v = (*v & !0xffff_ffff) | u64::from(low);
+}
+
+fn set_high(v: &mut u64, high: u32) {
+    *v = (*v & 0xffff_ffff) | (u64::from(high) << 32);
+}
+
+impl BusDevice for MmioTransport {
+    fn read(&self, offset: u64, data: &mut [u8]) {
+        let s = self.lock();
+        if offset >= CONFIG {
+            return s.device.read_config(offset - CONFIG, data);
+        }
+        let sel_queue = s.queues.get(s.queue_sel as usize);
+        let v: u32 = match offset {
+            MAGIC => MAGIC_VALUE,
+            VERSION => 2,
+            DEVICE_ID => s.device.device_type(),
+            VENDOR_ID => VENDOR,
+            DEVICE_FEATURES => match s.device_features_sel {
+                0 => s.device_features as u32,
+                1 => (s.device_features >> 32) as u32,
+                _ => 0,
+            },
+            QUEUE_NUM_MAX => sel_queue.map_or(0, |q| u32::from(q.max_size)),
+            QUEUE_READY => sel_queue.map_or(0, |q| u32::from(q.ready)),
+            INTERRUPT_STATUS => self.irq.status(),
+            STATUS => s.status,
+            // No shared memory regions: length all ones means absent.
+            SHM_LEN_LOW | SHM_LEN_HIGH => u32::MAX,
+            CONFIG_GENERATION => s.config_generation,
+            _ => 0,
+        };
+        put_le(data, u64::from(v));
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) {
+        let v = le_value(data) as u32;
+        if offset == QUEUE_NOTIFY {
+            return self.doorbell.ring(v as u16);
+        }
+        let mut s = self.lock();
+        if offset >= CONFIG {
+            return s.device.write_config(offset - CONFIG, data);
+        }
+        let configurable = s.status & status::DRIVER_OK == 0;
+        match offset {
+            DEVICE_FEATURES_SEL => s.device_features_sel = v,
+            DRIVER_FEATURES_SEL => s.driver_features_sel = v,
+            DRIVER_FEATURES => match s.driver_features_sel {
+                0 => set_low(&mut s.driver_features, v),
+                1 => set_high(&mut s.driver_features, v),
+                _ => {}
+            },
+            QUEUE_SEL => s.queue_sel = v,
+            QUEUE_NUM | QUEUE_READY | QUEUE_DESC_LOW | QUEUE_DESC_HIGH | QUEUE_DRIVER_LOW
+            | QUEUE_DRIVER_HIGH | QUEUE_DEVICE_LOW | QUEUE_DEVICE_HIGH
+                if configurable =>
+            {
+                if let Some(q) = Self::queue(&mut s) {
+                    match offset {
+                        QUEUE_NUM => q.size = v as u16,
+                        QUEUE_READY => q.ready = v == 1,
+                        QUEUE_DESC_LOW => set_low(&mut q.desc, v),
+                        QUEUE_DESC_HIGH => set_high(&mut q.desc, v),
+                        QUEUE_DRIVER_LOW => set_low(&mut q.avail, v),
+                        QUEUE_DRIVER_HIGH => set_high(&mut q.avail, v),
+                        QUEUE_DEVICE_LOW => set_low(&mut q.used, v),
+                        _ => set_high(&mut q.used, v),
+                    }
+                }
+            }
+            INTERRUPT_ACK => self.irq.ack(v),
+            STATUS => self.set_status(&mut s, v),
+            SHM_SEL => {}
+            _ => debug!(offset, v, "virtio-mmio: ignored write"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+    use crate::device::ParkDoorbell;
+    use crate::irq::TestIrq;
+
+    #[derive(Default)]
+    struct Probe {
+        activated: Arc<AtomicU32>,
+        resets: Arc<AtomicU32>,
+        doorbell: Arc<ParkDoorbell>,
+    }
+
+    impl VirtioDevice for Probe {
+        fn device_type(&self) -> u32 {
+            4
+        }
+        fn features(&self) -> u64 {
+            features::RING_EVENT_IDX
+        }
+        fn queue_max_sizes(&self) -> Vec<u16> {
+            vec![256]
+        }
+        fn read_config(&self, offset: u64, data: &mut [u8]) {
+            put_le(data, offset + 0x40);
+        }
+        fn activate(&mut self, act: Activation) -> Result<(), String> {
+            assert!(act.queues[0].event_idx);
+            self.activated.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::SeqCst);
+        }
+        fn doorbell(&self) -> Arc<dyn Doorbell> {
+            self.doorbell.clone()
+        }
+    }
+
+    fn rd(t: &MmioTransport, off: u64) -> u32 {
+        let mut d = [0u8; 4];
+        t.read(off, &mut d);
+        u32::from_le_bytes(d)
+    }
+
+    fn wr(t: &MmioTransport, off: u64, v: u32) {
+        t.write(off, &v.to_le_bytes());
+    }
+
+    fn transport() -> (MmioTransport, Arc<AtomicU32>, Arc<AtomicU32>) {
+        let p = Probe::default();
+        let (a, r) = (p.activated.clone(), p.resets.clone());
+        let irq = Arc::new(IrqStatus::new(Arc::new(TestIrq::default())));
+        let t = MmioTransport::new(Box::new(p), GuestMemory::from_vec(0, vec![0; 4096]), irq);
+        (t, a, r)
+    }
+
+    /// The Linux virtio-mmio probe sequence, condensed.
+    fn bring_up(t: &MmioTransport, driver_features: u64) {
+        wr(t, STATUS, 0);
+        wr(t, STATUS, status::ACKNOWLEDGE | status::DRIVER);
+        wr(t, DRIVER_FEATURES_SEL, 0);
+        wr(t, DRIVER_FEATURES, driver_features as u32);
+        wr(t, DRIVER_FEATURES_SEL, 1);
+        wr(t, DRIVER_FEATURES, (driver_features >> 32) as u32);
+        wr(
+            t,
+            STATUS,
+            status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK,
+        );
+        wr(t, QUEUE_SEL, 0);
+        wr(t, QUEUE_NUM, 128);
+        wr(t, QUEUE_DESC_LOW, 0x1000);
+        wr(t, QUEUE_DRIVER_LOW, 0x1800);
+        wr(t, QUEUE_DEVICE_LOW, 0x1a00);
+        wr(t, QUEUE_READY, 1);
+        wr(
+            t,
+            STATUS,
+            status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK | status::DRIVER_OK,
+        );
+    }
+
+    #[test]
+    fn identifies_and_offers_features() {
+        let (t, _, _) = transport();
+        assert_eq!(rd(&t, MAGIC), MAGIC_VALUE);
+        assert_eq!(rd(&t, VERSION), 2);
+        assert_eq!(rd(&t, DEVICE_ID), 4);
+        wr(&t, DEVICE_FEATURES_SEL, 1);
+        assert_eq!(rd(&t, DEVICE_FEATURES), 1, "VERSION_1 is bit 32");
+        wr(&t, DEVICE_FEATURES_SEL, 0);
+        assert_eq!(rd(&t, DEVICE_FEATURES), 1 << 29);
+        assert_eq!(rd(&t, QUEUE_NUM_MAX), 256);
+        assert_eq!(rd(&t, CONFIG + 4), 0x44);
+        assert_eq!(rd(&t, SHM_LEN_LOW), u32::MAX);
+    }
+
+    #[test]
+    fn driver_ok_activates_and_reset_deactivates() {
+        let (t, activated, resets) = transport();
+        bring_up(&t, features::VERSION_1 | features::RING_EVENT_IDX);
+        assert_eq!(activated.load(Ordering::SeqCst), 1);
+        assert_eq!(rd(&t, QUEUE_READY), 1);
+        // Queue registers are frozen once DRIVER_OK is set.
+        wr(&t, QUEUE_NUM, 64);
+        assert_eq!(t.lock().queues[0].size, 128);
+        wr(&t, STATUS, 0);
+        assert_eq!(resets.load(Ordering::SeqCst), 1);
+        assert_eq!(rd(&t, STATUS), 0);
+        assert_eq!(rd(&t, QUEUE_READY), 0);
+    }
+
+    #[test]
+    fn unknown_features_or_missing_version_1_refuse_features_ok() {
+        let (t, activated, _) = transport();
+        bring_up(&t, features::RING_EVENT_IDX);
+        assert_eq!(rd(&t, STATUS) & status::FEATURES_OK, 0);
+        assert_eq!(activated.load(Ordering::SeqCst), 0);
+        bring_up(&t, features::VERSION_1 | (1 << 40));
+        assert_eq!(rd(&t, STATUS) & status::FEATURES_OK, 0);
+    }
+
+    #[test]
+    fn misconfigured_queue_sets_needs_reset_and_raises_config_irq() {
+        let (t, activated, _) = transport();
+        wr(&t, STATUS, status::ACKNOWLEDGE | status::DRIVER);
+        wr(&t, DRIVER_FEATURES_SEL, 1);
+        wr(&t, DRIVER_FEATURES, 1);
+        wr(
+            &t,
+            STATUS,
+            status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK,
+        );
+        wr(&t, QUEUE_NUM, 100); // not a power of two
+        wr(&t, QUEUE_READY, 1);
+        wr(
+            &t,
+            STATUS,
+            status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK | status::DRIVER_OK,
+        );
+        assert_eq!(activated.load(Ordering::SeqCst), 0);
+        assert_ne!(rd(&t, STATUS) & status::DEVICE_NEEDS_RESET, 0);
+        assert_eq!(rd(&t, INTERRUPT_STATUS), crate::device::INT_CONFIG);
+        wr(&t, INTERRUPT_ACK, crate::device::INT_CONFIG);
+        assert_eq!(rd(&t, INTERRUPT_STATUS), 0);
+    }
+}

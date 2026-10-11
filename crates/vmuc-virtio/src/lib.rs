@@ -8,10 +8,13 @@
 //! handle, so they are unit-tested against byte buffers on any host.
 
 pub mod bus;
+pub mod device;
 pub mod irq;
 pub mod mem;
+pub mod mmio;
 pub mod queue;
 
 pub use bus::BusDevice;
+pub use device::{Activation, Doorbell, IrqStatus, VirtioDevice};
 pub use irq::{Interrupt, TestIrq};
 pub use mem::{Gpa, GuestMemory, MemError, MemResult, Pod};
