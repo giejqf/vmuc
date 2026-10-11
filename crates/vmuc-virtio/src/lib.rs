@@ -10,6 +10,7 @@
 pub mod bus;
 pub mod irq;
 pub mod mem;
+pub mod queue;
 
 pub use bus::BusDevice;
 pub use irq::{Interrupt, TestIrq};
