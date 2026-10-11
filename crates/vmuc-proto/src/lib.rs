@@ -279,6 +279,11 @@ pub enum EventKind {
         failed: bool,
     },
     Forward(Forward),
+    /// Something works less well than configured (e.g. no networking)
+    /// but the instance runs.
+    Warning {
+        message: String,
+    },
     Exiting {
         reason: String,
     },
