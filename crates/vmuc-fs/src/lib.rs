@@ -8,3 +8,4 @@ pub mod abi;
 pub mod host;
 pub mod inodes;
 pub mod passthrough;
+pub mod server;
