@@ -45,3 +45,6 @@ path = "../vmuc-vmm"
 
 [dependencies.vmuc-virtio]
 path = "../vmuc-virtio"
+
+[dependencies.vmuc-net]
+path = "../vmuc-net"

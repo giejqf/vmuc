@@ -111,6 +111,7 @@ pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<(
                     );
                     return Ok(());
                 }
+                EventKind::Warning { message } => eprintln!("  warning: {message}"),
                 EventKind::Degraded { errors } => {
                     bail!("{name} is degraded: {}", errors.join("; "))
                 }

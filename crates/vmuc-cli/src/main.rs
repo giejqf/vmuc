@@ -85,6 +85,12 @@ enum Command {
         #[arg(long, default_value_t = 600)]
         timeout: u64,
     },
+    /// Print how to install the vmnet helper and its sudoers rule.
+    Sudoers {
+        /// Where the helper is (or will be) installed.
+        #[arg(long)]
+        helper: Option<PathBuf>,
+    },
     /// Memory: host footprint, guest totals, reclaimed bytes.
     Stat {
         name: String,
@@ -237,14 +243,21 @@ fn main() -> anyhow::Result<()> {
                 Format::Json => println!("{}", serde_json::to_string_pretty(&rows)?),
                 Format::Table => {
                     println!(
-                        "{:<16} {:<8} {:>4} {:>8} {:>8}  DIR",
-                        "NAME", "STATUS", "CPUS", "MEMORY", "DISK"
+                        "{:<16} {:<8} {:<15} {:>4} {:>8} {:>8}  DIR",
+                        "NAME", "STATUS", "ADDRESS", "CPUS", "MEMORY", "DISK"
                     );
                     for r in &rows {
+                        let addr = r
+                            .addrs
+                            .iter()
+                            .find(|a| a.is_ipv4())
+                            .or(r.addrs.first())
+                            .map_or_else(|| "-".to_owned(), ToString::to_string);
                         println!(
-                            "{:<16} {:<8} {:>4} {:>8} {:>8}  {}",
+                            "{:<16} {:<8} {:<15} {:>4} {:>8} {:>8}  {}",
                             r.name,
                             r.status,
+                            addr,
                             r.cpus,
                             r.memory,
                             r.disk,
@@ -306,6 +319,10 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Shell { name, command } => lifecycle::shell(&home, &name, &command)?,
         Command::Stat { name, watch, json } => stat::run(&home, &name, watch, json)?,
+        Command::Sudoers { helper } => {
+            let helper = helper.unwrap_or_else(assets::vmnet_helper);
+            print!("{}", sudoers_text(&helper));
+        }
         Command::Reclaim { name } => {
             let dir = home.instance_dir(&name)?;
             match control::request(&dir, &vmuc_proto::ControlRequest::ReclaimNow)? {
@@ -362,6 +379,31 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Install instructions (as comments) followed by the sudoers rule, so
+/// `vmuc sudoers | sudo tee /etc/sudoers.d/vmuc` installs a valid file.
+fn sudoers_text(helper: &std::path::Path) -> String {
+    let built = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("vmuc-vmnet-helper")))
+        .filter(|p| p.is_file())
+        .map_or_else(
+            || "<path to vmuc-vmnet-helper>".to_owned(),
+            |p| p.display().to_string(),
+        );
+    let dir = helper
+        .parent()
+        .map_or_else(String::new, |d| d.display().to_string());
+    format!(
+        "# vmuc networking runs vmnet through a small root helper. Install it\n\
+         # where only root can change it, then this rule:\n\
+         #   sudo install -d -o root -g wheel -m 0755 {dir}\n\
+         #   sudo install -o root -g wheel -m 0755 {built} {helper}\n\
+         #   vmuc sudoers | sudo tee /etc/sudoers.d/vmuc\n{}",
+        vmuc_net::launch::sudoers_rule(helper),
+        helper = helper.display(),
+    )
 }
 
 /// `ubuntu` means `template:ubuntu` unless it names an existing file or

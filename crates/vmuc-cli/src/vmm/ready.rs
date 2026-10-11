@@ -131,6 +131,7 @@ fn run(shared: &Shared) {
     requirement(shared, 2, "ssh", true, false);
     shared.set_phase(Phase::Running);
     shared.events.push(EventKind::Running { addrs: Vec::new() });
+    watch_addresses(shared);
 
     // The guest clock starts from the RTC's whole seconds; tighten it.
     let now = SystemTime::now()
@@ -141,6 +142,45 @@ fn run(shared: &Shared) {
         max_drift_ms: 100,
     };
     let _ = agent_call(&shared.vsock, &sync, Duration::from_secs(2));
+}
+
+/// The guest's own addresses (from the agent), shown by `vmuc list` and
+/// `status`. DHCP may lag readiness, so look again for a little while.
+fn watch_addresses(shared: &Shared) {
+    for _ in 0..30 {
+        if shared.machine.stopping() {
+            return;
+        }
+        if let Ok(AgentResponse::Addresses(ifaces)) = agent_call(
+            &shared.vsock,
+            &AgentRequest::Addresses,
+            Duration::from_secs(2),
+        ) {
+            let addrs: Vec<std::net::IpAddr> = ifaces
+                .into_iter()
+                .filter(|i| i.name != "lo")
+                .flat_map(|i| i.addrs)
+                .filter(|a| !a.is_loopback() && !is_link_local(a))
+                .collect();
+            if !addrs.is_empty() {
+                shared
+                    .addrs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone_from(&addrs);
+                shared.events.push(EventKind::Running { addrs });
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn is_link_local(a: &std::net::IpAddr) -> bool {
+    match a {
+        std::net::IpAddr::V4(v) => v.is_link_local(),
+        std::net::IpAddr::V6(v) => (v.segments()[0] & 0xffc0) == 0xfe80,
+    }
 }
 
 fn fail(shared: &Shared, step: u32, what: &str) {

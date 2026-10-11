@@ -1177,6 +1177,7 @@ dependencies = [
  "vmuc-config",
  "vmuc-hv",
  "vmuc-image",
+ "vmuc-net",
  "vmuc-proto",
  "vmuc-virtio",
  "vmuc-vmm",

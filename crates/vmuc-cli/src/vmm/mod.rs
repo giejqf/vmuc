@@ -10,6 +10,7 @@
 
 mod forward;
 mod memory;
+mod network;
 mod ready;
 mod server;
 mod signals;
@@ -58,6 +59,7 @@ pub struct Shared {
     pressure_balloon: bool,
     min_available: u64,
     forwards: Mutex<Vec<Forward>>,
+    addrs: Mutex<Vec<std::net::IpAddr>>,
 }
 
 impl Shared {
@@ -73,7 +75,11 @@ impl Shared {
             pid: std::process::id(),
             cpus: self.cpus,
             memory: self.memory,
-            addrs: Vec::new(),
+            addrs: self
+                .addrs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
             uptime_secs: self.started.elapsed().as_secs(),
             errors: self
                 .errors
@@ -200,6 +206,8 @@ fn boot_and_wait(
     b.add_virtio(Box::new(Console::new(Arc::new(out.clone()))?))?;
     b.add_virtio(Box::new(Rng::new()?))?;
     let (balloon, reclaim) = b.add_balloon()?;
+    // Last, so disks keep their names: the NIC, when the helper starts.
+    let _helper = network::attach(&mut b, &resolved, &events);
     // Mapped, not read: a heap copy would stay billed for the VM's life.
     let kernel =
         MappedFile::open(&kernel_path).with_context(|| kernel_path.display().to_string())?;
@@ -224,6 +232,7 @@ fn boot_and_wait(
         pressure_balloon: resolved.memory_policy.pressure_balloon,
         min_available: resolved.memory_policy.min_available.bytes(),
         forwards: Mutex::new(Vec::new()),
+        addrs: Mutex::new(Vec::new()),
     });
     server::spawn(&inst.dir, Arc::clone(&shared))?;
     ready::spawn(Arc::clone(&shared));

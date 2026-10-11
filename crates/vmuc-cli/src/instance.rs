@@ -434,10 +434,27 @@ pub fn status(dir: &Path) -> &'static str {
     }
 }
 
+/// The guest's addresses from the latest `running` event, when running.
+pub fn addresses(dir: &Path) -> Vec<std::net::IpAddr> {
+    use vmuc_proto::EventKind;
+    if crate::state::running_pid(dir).is_none() {
+        return Vec::new();
+    }
+    crate::state::read_events(dir)
+        .into_iter()
+        .rev()
+        .find_map(|e| match e.kind {
+            EventKind::Running { addrs } if !addrs.is_empty() => Some(addrs),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct ListRow {
     pub name: String,
     pub status: &'static str,
+    pub addrs: Vec<std::net::IpAddr>,
     pub cpus: u32,
     pub memory: String,
     pub disk: String,
@@ -451,6 +468,7 @@ pub fn list(home: &VmucHome) -> anyhow::Result<Vec<ListRow>> {
         let r = inst.resolved(home)?;
         rows.push(ListRow {
             status: status(&inst.dir),
+            addrs: addresses(&inst.dir),
             name,
             cpus: r.cpus,
             memory: r.memory.to_string(),

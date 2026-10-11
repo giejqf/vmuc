@@ -13,6 +13,8 @@ use anyhow::bail;
 
 pub const KERNEL_ENV: &str = "VMUC_KERNEL";
 pub const AGENT_ENV: &str = "VMUC_AGENT";
+/// The vmnet helper, when not at its default root-owned home.
+pub const VMNET_HELPER_ENV: &str = "VMUC_VMNET_HELPER";
 /// Extra kernel parameters appended at boot (experiments and benchmarks).
 pub const CMDLINE_ENV: &str = "VMUC_KERNEL_CMDLINE";
 
@@ -86,6 +88,17 @@ pub fn kernel() -> anyhow::Result<PathBuf> {
         "guest kernel",
         "build it (make kernel) or download the kernel workflow artifact into guest/kernel/out",
     )
+}
+
+/// The vmnet helper (`vmuc sudoers` explains how to install it). Not
+/// searched for in the build tree: sudo must only run a root-owned copy.
+pub fn vmnet_helper() -> PathBuf {
+    std::env::var_os(VMNET_HELPER_ENV)
+        .filter(|v| !v.is_empty())
+        .map_or_else(
+            || PathBuf::from(vmuc_net::launch::DEFAULT_HELPER),
+            PathBuf::from,
+        )
 }
 
 pub fn agent() -> anyhow::Result<PathBuf> {
