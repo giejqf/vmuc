@@ -6,3 +6,5 @@
 
 pub mod fdt;
 pub mod layout;
+pub mod loader;
+pub mod psci;
