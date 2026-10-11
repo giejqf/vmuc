@@ -13,7 +13,6 @@ mod muxer;
 pub mod packet;
 
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -23,39 +22,18 @@ use mio::{Poll, Waker};
 pub use conn::OnConnect;
 use muxer::{CONTROL, Ctrl, Muxer, WAKER};
 
-use crate::device::{Activation, Doorbell, VirtioDevice, WorkerCtx, device_type, features};
+use crate::device::{
+    Activation, Doorbell, VirtioDevice, WakerDoorbell, WorkerCtx, device_type, features,
+};
 
 /// The guest's CID: the first one available to guests.
 pub const GUEST_CID: u64 = 3;
-
-/// Kicks set queue bits and wake the muxer's poll.
-struct MioDoorbell {
-    pending: Arc<AtomicU32>,
-    waker: Arc<Waker>,
-}
-
-impl MioDoorbell {
-    fn ring_bits(&self, bits: u32) {
-        self.pending.fetch_or(bits, Ordering::SeqCst);
-        if let Err(e) = self.waker.wake() {
-            tracing::warn!("vsock waker: {e}");
-        }
-    }
-}
-
-impl Doorbell for MioDoorbell {
-    fn ring(&self, queue: u16) {
-        if queue < 3 {
-            self.ring_bits(1 << queue);
-        }
-    }
-}
 
 /// Opens host-initiated streams; cheap to clone, any thread.
 #[derive(Clone)]
 pub struct VsockConnector {
     ctrl: Arc<Mutex<Sender<Ctrl>>>,
-    doorbell: Arc<MioDoorbell>,
+    doorbell: Arc<WakerDoorbell>,
 }
 
 impl std::fmt::Debug for VsockConnector {
@@ -94,10 +72,9 @@ pub struct Vsock {
 impl Vsock {
     pub fn new(guest_cid: u64) -> std::io::Result<Self> {
         let poll = Poll::new()?;
-        let waker = Arc::new(Waker::new(poll.registry(), WAKER)?);
-        let pending = Arc::new(AtomicU32::new(0));
+        let doorbell = Arc::new(WakerDoorbell::new(Waker::new(poll.registry(), WAKER)?, 3));
         let (tx, rx) = mpsc::channel();
-        let muxer = Muxer::new(poll, guest_cid, rx, Arc::clone(&pending));
+        let muxer = Muxer::new(poll, guest_cid, rx, Arc::clone(&doorbell));
         let thread = thread::Builder::new()
             .name("virtio-vsock".into())
             .spawn(move || muxer.run())?;
@@ -105,7 +82,7 @@ impl Vsock {
             guest_cid,
             connector: VsockConnector {
                 ctrl: Arc::new(Mutex::new(tx)),
-                doorbell: Arc::new(MioDoorbell { pending, waker }),
+                doorbell,
             },
             thread: Some(thread),
         })

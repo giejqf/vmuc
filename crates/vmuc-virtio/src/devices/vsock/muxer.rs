@@ -14,7 +14,6 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 
 use mio::net::UnixStream;
@@ -22,7 +21,7 @@ use mio::{Events, Interest, Poll, Token};
 
 use super::conn::{BUF_ALLOC, Conn, OnConnect, State};
 use super::packet::{HDR_LEN, HOST_CID, Hdr, SHUTDOWN_RCV, SHUTDOWN_SEND, TYPE_STREAM, op};
-use crate::device::WorkerCtx;
+use crate::device::{WakerDoorbell, WorkerCtx};
 use crate::devices::Segments;
 use crate::mem::GuestMemory;
 use crate::queue::DescChain;
@@ -44,7 +43,7 @@ pub struct Muxer {
     pub poll: Poll,
     pub guest_cid: u64,
     pub ctrl: Receiver<Ctrl>,
-    pub pending: Arc<AtomicU32>,
+    pub doorbell: Arc<WakerDoorbell>,
     ctx: Option<WorkerCtx>,
     conns: HashMap<u32, Conn>,
     /// Packets without payload waiting for a receive buffer.
@@ -66,12 +65,17 @@ fn rst_for(h: &Hdr) -> Hdr {
 }
 
 impl Muxer {
-    pub fn new(poll: Poll, guest_cid: u64, ctrl: Receiver<Ctrl>, pending: Arc<AtomicU32>) -> Self {
+    pub fn new(
+        poll: Poll,
+        guest_cid: u64,
+        ctrl: Receiver<Ctrl>,
+        doorbell: Arc<WakerDoorbell>,
+    ) -> Self {
         Self {
             poll,
             guest_cid,
             ctrl,
-            pending,
+            doorbell,
             ctx: None,
             conns: HashMap::new(),
             replies: VecDeque::new(),
@@ -93,7 +97,7 @@ impl Muxer {
             let mut kicked = 0;
             for ev in &events {
                 if ev.token() == WAKER {
-                    kicked |= self.pending.swap(0, Ordering::SeqCst);
+                    kicked |= self.doorbell.take();
                     continue;
                 }
                 let port = ev.token().0 as u32;

@@ -174,6 +174,46 @@ impl Doorbell for ParkDoorbell {
     }
 }
 
+/// A doorbell for devices that run a `mio` event loop (vsock, net): the
+/// bits are collected atomically and the loop's poll is woken, so queue
+/// kicks and socket readiness share one wait.
+#[derive(Debug)]
+pub struct WakerDoorbell {
+    pending: Arc<AtomicU32>,
+    waker: mio::Waker,
+    queues: u16,
+}
+
+impl WakerDoorbell {
+    pub fn new(waker: mio::Waker, queues: u16) -> Self {
+        Self {
+            pending: Arc::new(AtomicU32::new(0)),
+            waker,
+            queues,
+        }
+    }
+
+    /// The bits rung since the last call.
+    pub fn take(&self) -> u32 {
+        self.pending.swap(0, Ordering::SeqCst)
+    }
+
+    pub fn ring_bits(&self, bits: u32) {
+        self.pending.fetch_or(bits, Ordering::SeqCst);
+        if let Err(e) = self.waker.wake() {
+            tracing::warn!("device waker: {e}");
+        }
+    }
+}
+
+impl Doorbell for WakerDoorbell {
+    fn ring(&self, queue: u16) {
+        if queue < self.queues {
+            self.ring_bits(1 << queue);
+        }
+    }
+}
+
 /// The per-device logic a [`Worker`] drives.
 pub trait QueueHandler: Send + 'static {
     /// Handles kicks for the queues in `bits` (bit n = queue n) and
