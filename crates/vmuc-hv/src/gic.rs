@@ -12,20 +12,23 @@ use tracing::debug;
 use crate::error::{self, HvResult};
 use crate::ffi;
 
-/// Guest physical placement of the GIC frames. Must match the FDT.
+/// Guest physical placement of the GIC frames. Must match the FDT; the
+/// VMM's guest physical map owns the values.
 #[derive(Debug, Clone, Copy)]
 pub struct GicConfig {
     pub distributor_base: u64,
     pub redistributor_base: u64,
 }
 
-impl Default for GicConfig {
-    fn default() -> Self {
-        Self {
-            distributor_base: 0x0800_0000,
-            redistributor_base: 0x080A_0000,
-        }
-    }
+/// Interrupts whose INTIDs the framework assigns (`hv_gic_intid_t`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum ReservedIntid {
+    PerformanceMonitor = ffi::HV_GIC_INT_PERFORMANCE_MONITOR,
+    Maintenance = ffi::HV_GIC_INT_MAINTENANCE,
+    El2PhysicalTimer = ffi::HV_GIC_INT_EL2_PHYSICAL_TIMER,
+    El1VirtualTimer = ffi::HV_GIC_INT_EL1_VIRTUAL_TIMER,
+    El1PhysicalTimer = ffi::HV_GIC_INT_EL1_PHYSICAL_TIMER,
 }
 
 /// Handle to the VM's one GIC. Created after the VM and before any vCPU
@@ -43,19 +46,57 @@ impl Gic {
             return Err(crate::HvError::Unsupported);
         }
         // SAFETY: `c` is a live config object for each call below.
-        error::check(unsafe {
+        let rc = error::check(unsafe {
             ffi::hv_gic_config_set_distributor_base(c, config.distributor_base)
-        })?;
-        error::check(unsafe {
-            ffi::hv_gic_config_set_redistributor_base(c, config.redistributor_base)
-        })?;
-        error::check(unsafe { ffi::hv_gic_create(c) })?;
+        })
+        .and_then(|()| {
+            // SAFETY: as above.
+            error::check(unsafe {
+                ffi::hv_gic_config_set_redistributor_base(c, config.redistributor_base)
+            })
+        })
+        // SAFETY: as above; the framework copies the configuration.
+        .and_then(|()| error::check(unsafe { ffi::hv_gic_create(c) }));
+        // SAFETY: `c` was returned retained and is not used again.
+        unsafe { ffi::os_release(c) };
+        rc?;
         debug!(
             gicd = format_args!("{:#x}", config.distributor_base),
             gicr = format_args!("{:#x}", config.redistributor_base),
             "GICv3 created"
         );
         Ok(Self { config })
+    }
+
+    /// Size of the distributor frame and the alignment its base needs.
+    /// Valid before the GIC exists (after the VM does).
+    pub fn distributor_geometry() -> HvResult<(usize, usize)> {
+        let (mut size, mut align) = (0usize, 0usize);
+        // SAFETY: valid out-pointers.
+        error::check(unsafe { ffi::hv_gic_get_distributor_size(&raw mut size) })?;
+        // SAFETY: valid out-pointer.
+        error::check(unsafe { ffi::hv_gic_get_distributor_base_alignment(&raw mut align) })?;
+        Ok((size, align))
+    }
+
+    /// Size of the whole redistributor region (every vCPU the framework
+    /// supports, not just the ones created) and its base alignment.
+    pub fn redistributor_geometry() -> HvResult<(usize, usize)> {
+        let (mut size, mut align) = (0usize, 0usize);
+        // SAFETY: valid out-pointers.
+        error::check(unsafe { ffi::hv_gic_get_redistributor_region_size(&raw mut size) })?;
+        // SAFETY: valid out-pointer.
+        error::check(unsafe { ffi::hv_gic_get_redistributor_base_alignment(&raw mut align) })?;
+        Ok((size, align))
+    }
+
+    /// The INTID the framework uses for one of its reserved interrupts,
+    /// e.g. the EL1 virtual timer PPI the FDT must advertise.
+    pub fn reserved_intid(which: ReservedIntid) -> HvResult<u32> {
+        let mut intid = 0u32;
+        // SAFETY: valid out-pointer.
+        error::check(unsafe { ffi::hv_gic_get_intid(which as u16, &raw mut intid) })?;
+        Ok(intid)
     }
 
     pub fn config(&self) -> GicConfig {
@@ -121,7 +162,12 @@ mod tests {
     #[test]
     fn stub_returns_unsupported() {
         if !crate::NATIVE {
-            assert!(super::Gic::new(super::GicConfig::default()).is_err());
+            let config = super::GicConfig {
+                distributor_base: 0x0800_0000,
+                redistributor_base: 0x0c00_0000,
+            };
+            assert!(super::Gic::new(config).is_err());
+            assert!(super::Gic::redistributor_geometry().is_err());
         }
     }
 }

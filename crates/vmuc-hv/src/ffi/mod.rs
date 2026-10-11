@@ -89,6 +89,13 @@ pub const HV_SYS_REG_ELR_EL1: u16 = 0xe201;
 pub const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 pub const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
 
+// Interrupts the framework reserves (`hv_gic_intid_t`, a uint16_t enum).
+pub const HV_GIC_INT_PERFORMANCE_MONITOR: u16 = 23;
+pub const HV_GIC_INT_MAINTENANCE: u16 = 25;
+pub const HV_GIC_INT_EL2_PHYSICAL_TIMER: u16 = 26;
+pub const HV_GIC_INT_EL1_VIRTUAL_TIMER: u16 = 27;
+pub const HV_GIC_INT_EL1_PHYSICAL_TIMER: u16 = 30;
+
 // Interrupt types for hv_vcpu_set_pending_interrupt.
 pub const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
 pub const HV_INTERRUPT_TYPE_FIQ: u32 = 1;

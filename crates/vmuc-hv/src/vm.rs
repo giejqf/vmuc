@@ -39,9 +39,12 @@ impl HvVm {
             return Err(crate::HvError::Unsupported);
         }
         // SAFETY: `config` is a live config object.
-        error::check(unsafe { ffi::hv_vm_config_set_ipa_size(config, ipa_bits) })?;
-        // SAFETY: as above.
-        error::check(unsafe { ffi::hv_vm_create(config) })?;
+        let rc = error::check(unsafe { ffi::hv_vm_config_set_ipa_size(config, ipa_bits) })
+            // SAFETY: as above; the framework copies what it needs.
+            .and_then(|()| error::check(unsafe { ffi::hv_vm_create(config) }));
+        // SAFETY: `config` was returned retained and is not used again.
+        unsafe { ffi::os_release(config) };
+        rc?;
         debug!(ipa_bits, "hypervisor VM created");
         Ok(Self { _private: () })
     }
@@ -54,6 +57,14 @@ impl HvVm {
         // SAFETY: valid out-pointer.
         error::check(unsafe { ffi::hv_vm_config_get_max_ipa_size(&raw mut max) })?;
         Ok((default, max))
+    }
+
+    /// Most vCPUs one VM can have on this host.
+    pub fn max_vcpu_count() -> HvResult<u32> {
+        let mut n = 0u32;
+        // SAFETY: valid out-pointer.
+        error::check(unsafe { ffi::hv_vm_get_max_vcpu_count(&raw mut n) })?;
+        Ok(n)
     }
 
     /// Maps host memory into the guest at `ipa`.

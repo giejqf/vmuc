@@ -12,6 +12,7 @@ use super::{hv_ipa_t, hv_memory_flags_t, hv_return_t, hv_vcpu_exit_t, hv_vcpu_t}
 #[link(name = "Hypervisor", kind = "framework")]
 unsafe extern "C" {
     // VM lifecycle.
+    pub fn hv_vm_get_max_vcpu_count(count: *mut u32) -> hv_return_t;
     pub fn hv_vm_create(config: *mut c_void) -> hv_return_t;
     pub fn hv_vm_destroy() -> hv_return_t;
 
@@ -89,6 +90,12 @@ unsafe extern "C" {
     pub fn hv_gic_get_msi_region_size(size: *mut usize) -> hv_return_t;
     pub fn hv_gic_get_msi_region_base_alignment(alignment: *mut usize) -> hv_return_t;
     pub fn hv_gic_get_spi_interrupt_range(base: *mut u32, count: *mut u32) -> hv_return_t;
-    pub fn hv_gic_get_intid(intid: u32, value: *mut u32) -> hv_return_t;
+    pub fn hv_gic_get_intid(interrupt: u16, intid: *mut u32) -> hv_return_t;
     pub fn hv_gic_set_state(data: *const c_void, size: usize) -> hv_return_t;
+}
+
+// Config objects (`hv_vm_config_t`, `hv_gic_config_t`) are os_objects
+// returned retained; libSystem's `os_release` drops them.
+unsafe extern "C" {
+    pub fn os_release(object: *mut c_void);
 }

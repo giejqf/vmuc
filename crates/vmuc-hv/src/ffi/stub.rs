@@ -20,6 +20,7 @@ macro_rules! stubs {
 }
 
 stubs! {
+    fn hv_vm_get_max_vcpu_count(count: *mut u32) -> hv_return_t = UNSUPPORTED;
     fn hv_vm_create(config: *mut c_void) -> hv_return_t = UNSUPPORTED;
     fn hv_vm_destroy() -> hv_return_t = UNSUPPORTED;
     fn hv_vm_map(addr: *mut u8, ipa: hv_ipa_t, size: usize, flags: hv_memory_flags_t) -> hv_return_t = UNSUPPORTED;
@@ -64,6 +65,7 @@ stubs! {
     fn hv_gic_get_msi_region_size(size: *mut usize) -> hv_return_t = UNSUPPORTED;
     fn hv_gic_get_msi_region_base_alignment(alignment: *mut usize) -> hv_return_t = UNSUPPORTED;
     fn hv_gic_get_spi_interrupt_range(base: *mut u32, count: *mut u32) -> hv_return_t = UNSUPPORTED;
-    fn hv_gic_get_intid(intid: u32, value: *mut u32) -> hv_return_t = UNSUPPORTED;
+    fn hv_gic_get_intid(interrupt: u16, intid: *mut u32) -> hv_return_t = UNSUPPORTED;
     fn hv_gic_set_state(data: *const c_void, size: usize) -> hv_return_t = UNSUPPORTED;
+    fn os_release(object: *mut c_void) -> () = ();
 }

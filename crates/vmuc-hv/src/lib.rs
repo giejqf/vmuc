@@ -22,7 +22,7 @@ mod vm;
 
 pub use error::{HvError, HvResult, check};
 pub use exit::{ExceptionClass, MmioInfo, VcpuExit};
-pub use gic::{Gic, GicConfig};
+pub use gic::{Gic, GicConfig, ReservedIntid};
 pub use memory::{HOST_PAGE_SIZE, MemoryPermission, align_inward};
 pub use vcpu::HvVcpu;
 pub use vm::HvVm;
