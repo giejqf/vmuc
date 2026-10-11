@@ -11,5 +11,8 @@ publish = false
 [dependencies]
 vmuc-vmm = { path = "../../crates/vmuc-vmm" }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
