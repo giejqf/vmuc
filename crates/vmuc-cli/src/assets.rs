@@ -13,6 +13,8 @@ use anyhow::bail;
 
 pub const KERNEL_ENV: &str = "VMUC_KERNEL";
 pub const AGENT_ENV: &str = "VMUC_AGENT";
+/// Extra kernel parameters appended at boot (experiments and benchmarks).
+pub const CMDLINE_ENV: &str = "VMUC_KERNEL_CMDLINE";
 
 const AGENT_TARGET: &str = "aarch64-unknown-linux-musl";
 

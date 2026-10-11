@@ -13,6 +13,7 @@ mod instance;
 mod keys;
 mod lifecycle;
 mod proxy;
+mod stat;
 mod state;
 mod terminal;
 mod vmm;
@@ -84,6 +85,18 @@ enum Command {
         #[arg(long, default_value_t = 600)]
         timeout: u64,
     },
+    /// Memory: host footprint, guest totals, reclaimed bytes.
+    Stat {
+        name: String,
+        /// Refresh every second.
+        #[arg(long, short)]
+        watch: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask the guest to drop caches and compact so its free memory can be
+    /// handed back now.
+    Reclaim { name: String },
     /// Open a shell in an instance, or run a command there.
     Shell {
         name: String,
@@ -292,6 +305,16 @@ fn main() -> anyhow::Result<()> {
             lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
         }
         Command::Shell { name, command } => lifecycle::shell(&home, &name, &command)?,
+        Command::Stat { name, watch, json } => stat::run(&home, &name, watch, json)?,
+        Command::Reclaim { name } => {
+            let dir = home.instance_dir(&name)?;
+            match control::request(&dir, &vmuc_proto::ControlRequest::ReclaimNow)? {
+                vmuc_proto::ControlResponse::Ok => {
+                    eprintln!("asked {name} to drop caches and compact");
+                }
+                other => anyhow::bail!("{other:?}"),
+            }
+        }
         Command::Vmm { name } => vmm::run(&home, &name)?,
         Command::Proxy { name, port, via } => {
             let conn: Box<dyn agent_client::AgentConn> = match via {

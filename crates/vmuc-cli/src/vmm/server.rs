@@ -43,6 +43,15 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
             shared.stop(force);
             ControlResponse::Ok
         }
+        ControlRequest::Stat => ControlResponse::Stat(super::memory::stat(shared)),
+        ControlRequest::ReclaimNow => match super::memory::reclaim_now(shared) {
+            Ok(()) => ControlResponse::Ok,
+            Err(message) => ControlResponse::Error { message },
+        },
+        ControlRequest::BalloonTarget { bytes } => {
+            shared.balloon.set_target(bytes);
+            ControlResponse::Ok
+        }
         ControlRequest::VsockConnect { port } => {
             let reply = Box::new(|stream: &mut _, r: Result<(), String>| {
                 let resp = match r {
@@ -64,8 +73,8 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
             }
             return;
         }
-        other => ControlResponse::Error {
-            message: format!("{other:?} is not implemented yet"),
+        ControlRequest::Forwards => ControlResponse::Error {
+            message: "port forwarding arrives with networking (M6)".into(),
         },
     };
     let _ = write_line(&mut s, &resp);

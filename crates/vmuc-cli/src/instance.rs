@@ -375,8 +375,12 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
     // Free page reporting's delay is hard-coded to 2 s in Linux 6.18
     // (`mm/page_reporting.c`); there is no command-line knob for it.
     // No earlycon: every early-console byte is a PL011 exit, and hvc0
-    // replays the kernel log once it is up.
-    let mut cmdline = format!("console=hvc0 root={root_arg} rw panic=-1");
+    // replays the kernel log once it is up. Free page reporting from order
+    // 5 (128 KiB, eight host pages) instead of the 2 MiB pageblock: the
+    // bulk path is as fast, and an idle guest hands back ~200 MiB more
+    // (docs/experiments/2026-10-11-reporting-order.md).
+    let mut cmdline =
+        format!("console=hvc0 root={root_arg} rw panic=-1 page_reporting.page_reporting_order=5");
     if let Some(extra) = resolved
         .images
         .first()

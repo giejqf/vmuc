@@ -8,6 +8,7 @@
 //! it). A guest reset re-executes the process for a clean VM; the pid
 //! stays the same.
 
+mod memory;
 mod ready;
 mod server;
 mod signals;
@@ -21,11 +22,14 @@ use anyhow::{Context, bail};
 use vmuc_config::VmucHome;
 use vmuc_config::paths::instance as files;
 use vmuc_proto::{AgentRequest, EventKind, InstanceStatus, Phase};
+use vmuc_virtio::devices::balloon::BalloonHandle;
 use vmuc_virtio::devices::blk::{Block, BlockConfig};
 use vmuc_virtio::devices::console::Console;
 use vmuc_virtio::devices::rng::Rng;
 use vmuc_virtio::devices::vsock::{GUEST_CID, Vsock, VsockConnector};
+use vmuc_vmm::loader::MappedFile;
 use vmuc_vmm::machine::Machine;
+use vmuc_vmm::memory::ReclaimStats;
 use vmuc_vmm::{ConsoleOut, VmBuilder, VmConfig, VmExit};
 
 use crate::assets;
@@ -47,6 +51,11 @@ pub struct Shared {
     phase: Mutex<Phase>,
     errors: Mutex<Vec<String>>,
     events: EventLog,
+    balloon: BalloonHandle,
+    reclaim: Arc<ReclaimStats>,
+    last_reclaim: Mutex<Option<Instant>>,
+    pressure_balloon: bool,
+    min_available: u64,
 }
 
 impl Shared {
@@ -122,6 +131,18 @@ pub fn run(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     }
 }
 
+/// macOS's allocator keeps freed large blocks (the kernel image, the
+/// seed ISO, the agent binary) dirty and billed; hand them back once the
+/// guest is loaded, since this process lives as long as the VM.
+fn release_freed_heap() {
+    unsafe extern "C" {
+        fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+    }
+    // SAFETY: a NULL zone means every zone; goal 0 means as much as possible.
+    let freed = unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+    tracing::debug!(freed, "returned freed heap to the system");
+}
+
 fn boot_and_wait(
     home: &VmucHome,
     inst: &Instance,
@@ -130,13 +151,18 @@ fn boot_and_wait(
     let resolved = inst.resolved(home)?;
     let events = EventLog::create(&inst.dir)?;
     let kernel_path = assets::kernel()?;
-    let kernel = std::fs::read(&kernel_path).with_context(|| kernel_path.display().to_string())?;
     let agent = assets::agent()?;
     let boot_id = instance::write_seed(home, inst, &resolved, Some(&agent), false)?;
     events.push(EventKind::Booting {
         boot_id: boot_id.clone(),
     });
-    let info = instance::boot_info(inst, &resolved)?;
+    let mut info = instance::boot_info(inst, &resolved)?;
+    // Experiments and benchmarks append kernel parameters without editing
+    // the instance (e.g. page_reporting.page_reporting_order=N).
+    if let Some(extra) = std::env::var_os(assets::CMDLINE_ENV).filter(|v| !v.is_empty()) {
+        info.cmdline.push(' ');
+        info.cmdline.push_str(&extra.to_string_lossy());
+    }
 
     let log = File::create(inst.dir.join(files::CONSOLE_LOG))?;
     let (out, writer) = ConsoleOut::spawn(vec![Box::new(log)]);
@@ -171,7 +197,13 @@ fn boot_and_wait(
     b.add_virtio(Box::new(vsock))?;
     b.add_virtio(Box::new(Console::new(Arc::new(out.clone()))?))?;
     b.add_virtio(Box::new(Rng::new()?))?;
+    let (balloon, reclaim) = b.add_balloon()?;
+    // Mapped, not read: a heap copy would stay billed for the VM's life.
+    let kernel =
+        MappedFile::open(&kernel_path).with_context(|| kernel_path.display().to_string())?;
     let vm = b.boot(&kernel, None)?;
+    drop(kernel);
+    release_freed_heap();
 
     let shared = Arc::new(Shared {
         name: inst.name.clone(),
@@ -184,9 +216,15 @@ fn boot_and_wait(
         phase: Mutex::new(Phase::Booting),
         errors: Mutex::new(Vec::new()),
         events,
+        balloon,
+        reclaim,
+        last_reclaim: Mutex::new(None),
+        pressure_balloon: resolved.memory_policy.pressure_balloon,
+        min_available: resolved.memory_policy.min_available.bytes(),
     });
     server::spawn(&inst.dir, Arc::clone(&shared))?;
     ready::spawn(Arc::clone(&shared));
+    memory::spawn_responder(Arc::clone(&shared));
     signals::spawn(signals, Arc::clone(&shared))?;
 
     let exit = vm.wait();

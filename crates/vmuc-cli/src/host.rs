@@ -158,7 +158,7 @@ pub(crate) fn sysctl_text(name: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn sysctl_u32(name: &str) -> Option<u32> {
+pub(crate) fn sysctl_u32(name: &str) -> Option<u32> {
     let cname = std::ffi::CString::new(name).ok()?;
     let mut value: u32 = 0;
     let mut len: libc::size_t = size_of::<u32>();
@@ -181,7 +181,7 @@ pub(crate) fn sysctl_text(_name: &str) -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn sysctl_u32(_name: &str) -> Option<u32> {
+pub(crate) fn sysctl_u32(_name: &str) -> Option<u32> {
     None
 }
 
