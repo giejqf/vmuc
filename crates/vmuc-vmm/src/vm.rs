@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 
 use tracing::{debug, info};
 use vmuc_hv::{Gic, GicConfig, HvError, HvVm, ReservedIntid};
-use vmuc_virtio::{BusDevice, GuestMemory, Interrupt};
+use vmuc_virtio::{BusDevice, GuestMemory, Interrupt, IrqStatus, MmioTransport, VirtioDevice};
 
 use crate::bus::{MmioBus, Overlap};
 use crate::devices::console::ConsoleOut;
@@ -27,7 +27,7 @@ use crate::devices::pl031::Pl031;
 use crate::fdt::{self, FdtError, FdtParams, TimerIntids};
 use crate::layout::{
     GICD_BASE, GICR_BASE, GICR_WINDOW, PL011_BASE, PL011_SPI, PL031_BASE, PRIMECELL_SIZE, RAM_BASE,
-    spi_intid,
+    VIRTIO_SLOT_SIZE, VIRTIO_SLOTS, spi_intid, virtio_slot_base, virtio_slot_spi,
 };
 use crate::loader::{BootLayout, ImageHeader, LoadError};
 use crate::machine::{Machine, VmExit};
@@ -73,7 +73,7 @@ impl Interrupt for SpiLine {
 pub struct VmBuilder {
     config: VmConfig,
     bus: MmioBus,
-    virtio_slots: u32,
+    transports: Vec<Arc<MmioTransport>>,
     gicr_frame: u64,
     gic: Gic,
     ram: GuestRam,
@@ -112,7 +112,7 @@ impl VmBuilder {
         Ok(Self {
             config,
             bus: MmioBus::default(),
-            virtio_slots: 0,
+            transports: Vec::new(),
             gicr_frame,
             gic,
             ram,
@@ -146,9 +146,29 @@ impl VmBuilder {
         Ok(())
     }
 
-    /// Declares that virtio-mmio slots `0..n` are populated (FDT nodes).
-    pub fn set_virtio_slots(&mut self, n: u32) {
-        self.virtio_slots = n;
+    /// Puts a virtio device in the next virtio-mmio slot, wired to that
+    /// slot's SPI. Slot order is FDT order, so the first block device
+    /// added is `/dev/vda`.
+    pub fn add_virtio(
+        &mut self,
+        device: Box<dyn VirtioDevice>,
+    ) -> Result<Arc<MmioTransport>, VmError> {
+        let slot = self.transports.len() as u32;
+        if slot >= VIRTIO_SLOTS {
+            return Err(VmError::Config(format!(
+                "more than {VIRTIO_SLOTS} virtio devices"
+            )));
+        }
+        let line = Arc::new(SpiLine(spi_intid(virtio_slot_spi(slot))));
+        let transport = Arc::new(MmioTransport::new(
+            device,
+            self.ram.memory(),
+            Arc::new(IrqStatus::new(line)),
+        ));
+        self.bus
+            .insert(virtio_slot_base(slot), VIRTIO_SLOT_SIZE, transport.clone())?;
+        self.transports.push(Arc::clone(&transport));
+        Ok(transport)
     }
 
     /// Loads the kernel, writes the device tree and starts the vCPUs.
@@ -178,7 +198,7 @@ impl VmBuilder {
             cmdline: &self.config.cmdline,
             initrd: layout.initrd.clone(),
             gicr_size: u64::from(self.config.cpus) * self.gicr_frame,
-            virtio_slots: self.virtio_slots,
+            virtio_slots: self.transports.len() as u32,
             rng_seed: &seed,
             kaslr_seed: u64::from_le_bytes(kaslr),
             timers,
@@ -190,6 +210,7 @@ impl VmBuilder {
         let mut vm = Vm {
             machine,
             vcpu_threads: Vec::new(),
+            transports: self.transports,
             _gic: self.gic,
             _hv: self.hv,
             _ram: self.ram,
@@ -223,6 +244,9 @@ impl VmBuilder {
 pub struct Vm {
     machine: Arc<Machine>,
     vcpu_threads: Vec<JoinHandle<()>>,
+    /// Shut down after the vCPUs, so device workers stop touching guest
+    /// memory before the VM and RAM go away.
+    transports: Vec<Arc<MmioTransport>>,
     // Dropped in declaration order after `Drop::drop` has joined the
     // vCPUs: GIC, then the VM (hv_vm_destroy), then RAM (munmap).
     _gic: Gic,
@@ -258,6 +282,9 @@ impl Drop for Vm {
         self.machine.request_exit(VmExit::Stopped);
         for t in self.vcpu_threads.drain(..) {
             let _ = t.join();
+        }
+        for t in self.transports.drain(..) {
+            t.shutdown();
         }
         let c = &self.machine.counts;
         let n = |a: &std::sync::atomic::AtomicU64| a.load(std::sync::atomic::Ordering::Relaxed);

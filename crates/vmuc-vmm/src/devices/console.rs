@@ -91,6 +91,12 @@ impl ConsoleOut {
     }
 }
 
+impl vmuc_virtio::devices::console::ConsoleSink for ConsoleOut {
+    fn write(&self, bytes: &[u8]) {
+        self.push(bytes);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
