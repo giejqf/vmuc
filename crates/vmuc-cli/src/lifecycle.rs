@@ -15,6 +15,11 @@ use crate::instance::Instance;
 use crate::state;
 use crate::{control, keys};
 
+/// How long `stop` waits for the guest to power off.
+const STOP_WAIT: Duration = Duration::from_secs(90);
+/// How long `stop --force` waits before killing the VMM outright.
+const FORCE_GRACE: Duration = Duration::from_secs(10);
+
 /// The ssh host alias in `ssh.config`.
 pub fn ssh_host(name: &str) -> String {
     format!("vmuc-{name}")
@@ -162,10 +167,20 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
         ControlResponse::Ok => {}
         other => bail!("stop: {other:?}"),
     }
+    let limit = if force { FORCE_GRACE } else { STOP_WAIT };
     let started = Instant::now();
     while state::pid_alive(pid) {
-        if started.elapsed() > Duration::from_secs(90) {
-            bail!("{name} (pid {pid}) is still running; try `vmuc stop --force {name}`");
+        if started.elapsed() > limit {
+            if !force {
+                bail!("{name} (pid {pid}) is still running; try `vmuc stop --force {name}`");
+            }
+            // The VMM acknowledged the forced stop but cannot finish
+            // tearing the VM down (a device thread stuck in the host).
+            // The kernel reclaims a killed process's VM and memory.
+            eprintln!("{name}: the VMM did not exit; killing pid {pid}");
+            state::kill(pid)?;
+            state::remove_pid(&inst.dir);
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }

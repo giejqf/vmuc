@@ -22,6 +22,19 @@ pub fn pid_alive(pid: u32) -> bool {
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// SIGKILLs `pid` and waits (up to 5 s) for it to be gone.
+pub fn kill(pid: u32) -> std::io::Result<()> {
+    // SAFETY: plain kill(2) on a pid we just checked is our VMM.
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let started = std::time::Instant::now();
+    while pid_alive(pid) && started.elapsed() < std::time::Duration::from_secs(5) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(())
+}
+
 /// The running VMM's pid, if the pid file is from this host boot and the
 /// process is alive.
 pub fn running_pid(dir: &Path) -> Option<u32> {
