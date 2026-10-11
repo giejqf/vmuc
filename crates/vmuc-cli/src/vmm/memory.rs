@@ -52,6 +52,19 @@ pub fn host_footprint() -> u64 {
     if rc == 0 { info.ri_phys_footprint } else { 0 }
 }
 
+/// This process's user + system CPU time, nanoseconds. (getrusage, not
+/// proc_pid_rusage, whose times are Mach ticks on Apple silicon.)
+fn cpu_time() -> u64 {
+    // SAFETY: a zeroed rusage is a valid out-buffer.
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: valid out-buffer for RUSAGE_SELF.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut ru) } != 0 {
+        return 0;
+    }
+    let ns = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1000;
+    ns(ru.ru_utime) + ns(ru.ru_stime)
+}
+
 pub fn stat(shared: &Shared) -> Stat {
     let r = &shared.reclaim;
     let (guest_total, guest_available) = shared
@@ -67,8 +80,7 @@ pub fn stat(shared: &Shared) -> Stat {
         balloon: shared.balloon.actual(),
         release_p50_us: r.latency_quantile_us(500),
         release_p99_us: r.latency_quantile_us(990),
-        // Per-vCPU execution time is not collected yet.
-        vcpu_exec_nanos: 0,
+        host_cpu_nanos: cpu_time(),
     }
 }
 

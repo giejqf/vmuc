@@ -231,7 +231,9 @@ pub struct Stat {
     /// p50 / p99 release latency per 2 MiB range, microseconds.
     pub release_p50_us: u32,
     pub release_p99_us: u32,
-    pub vcpu_exec_nanos: u64,
+    /// User + system CPU time of the VMM process (vCPUs and devices):
+    /// what the VM has cost the host, nanoseconds since it started.
+    pub host_cpu_nanos: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
