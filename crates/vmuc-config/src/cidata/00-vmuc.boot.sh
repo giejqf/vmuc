@@ -13,9 +13,11 @@ if [ ! -e "${dev}" ]; then
 	# No udev symlinks (busybox mdev): ask blkid instead.
 	dev="$(blkid -L cidata)"
 fi
-mkdir -p "${VMUC_CIDATA_MNT}"
-chmod 0700 "${VMUC_CIDATA_MNT}"
+# Already mounted when bootcmd ran this earlier in the same boot; the
+# mount point's mode can only be set before mounting (the ISO is read-only).
 if ! mountpoint -q "${VMUC_CIDATA_MNT}"; then
+	mkdir -p "${VMUC_CIDATA_MNT}"
+	chmod 0700 "${VMUC_CIDATA_MNT}"
 	mount -o ro,mode=0700,dmode=0700,overriderockperm,exec,uid=0 "${dev}" "${VMUC_CIDATA_MNT}"
 fi
 export VMUC_CIDATA_MNT
