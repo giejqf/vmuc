@@ -140,8 +140,8 @@ Components:
 - `GuestRam`: one anonymous `MAP_PRIVATE|MAP_ANON` region, 16 KiB
   aligned, never pre-touched. Mapped once with `hv_vm_map` RWX. Host
   cost at boot is the kernel image plus whatever the guest touches.
-- `Reclaimer` (own thread): consumes ranges from the balloon device's
-  reporting queue. For each: align inward to 16 KiB; skip if nothing is
+- `Reclaimer` (on the balloon device's own worker thread, never a vCPU):
+  consumes ranges from the balloon device's reporting queue. For each: align inward to 16 KiB; skip if nothing is
   resident (`mincore`); `hv_vm_unmap` → `mmap(MAP_FIXED|MAP_ANON|MAP_PRIVATE)`
   at the same host address → `hv_vm_map` RWX → ack. A remap failure is
   fatal for the instance (the guest would have a hole in RAM); the
@@ -161,9 +161,12 @@ Components:
   most once per 60 s; return to target 0 when pressure clears for 120 s
   or guest PSI memory `some` exceeds 10% over 10 s. Off by default.
 - Guest side: kernel with `VIRTIO_BALLOON=y`, `PAGE_REPORTING=y`,
-  `TRANSPARENT_HUGEPAGE=y` (pageblock order 9 → 2 MiB reports),
-  `INIT_ON_FREE_DEFAULT_ON=n`, `PAGE_POISONING=n`. Agent exposes
-  `meminfo`, `psi`, `drop_caches`, `compact` RPCs.
+  `TRANSPARENT_HUGEPAGE=y`, `INIT_ON_FREE_DEFAULT_ON=n`,
+  `PAGE_POISONING=n`; the command line sets
+  `page_reporting.page_reporting_order=5` (128 KiB) instead of the 2 MiB
+  pageblock default: the bulk path is as fast and an idle guest hands
+  back ~220 MiB more (`docs/experiments/2026-10-11-reporting-order.md`).
+  Agent exposes `meminfo`, `psi`, `drop_caches`, `compact` RPCs.
 
 Invariants, also in AGENTS.md: only the unmap/refresh/remap sequence
 returns memory; `madvise` never does; never unmap a range smaller than a
