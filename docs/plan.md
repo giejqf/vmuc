@@ -112,11 +112,11 @@ Global: `~/.vmuc/_config/{user,user.pub,default.yaml,override.yaml}`,
 | IPA | Contents |
 |-----|----------|
 | 0x0800_0000 | GICv3 distributor (64 KiB) |
-| 0x080A_0000 | GICv3 redistributors (32 MiB, up to 128 vCPUs) |
-| 0x0900_0000 | PL011 UART |
-| 0x0901_0000 | PL031 RTC |
-| 0x0A00_0000 | virtio-mmio slots, 32 × 4 KiB, SPIs 32.. |
-| 0x4000_0000 | RAM: kernel Image at +0, initrd (if any) at +128 MiB, FDT at end of RAM, page-aligned |
+| 0x0900_0000 | PL011 UART, SPI 1 |
+| 0x0901_0000 | PL031 RTC, SPI 2 |
+| 0x0A00_0000 | virtio-mmio slots, 32 × 4 KiB, SPI 32 + slot |
+| 0x0C00_0000 | GICv3 redistributors (64 MiB window; the framework's region is 32 MiB on an M4 Pro, sized for every vCPU it supports, so it cannot sit at QEMU's 0x080A_0000 without covering the devices; see `docs/experiments/2026-10-11-hv-contract-m4-pro.md`) |
+| 0x4000_0000 | RAM: kernel Image at +text_offset, initrd at max(kernel end, min(RAM/2, 128 MiB)) on a 2 MiB boundary, FDT in the last 2 MiB |
 
 ### Boot sequence
 

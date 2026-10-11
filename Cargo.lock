@@ -1131,6 +1131,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
+name = "vm-fdt"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
+
+[[package]]
 name = "vmuc-agent"
 version = "0.1.0-dev"
 dependencies = [
@@ -1250,7 +1256,9 @@ dependencies = [
  "libc",
  "thiserror",
  "tracing",
+ "vm-fdt",
  "vmuc-hv",
+ "vmuc-virtio",
 ]
 
 [[package]]

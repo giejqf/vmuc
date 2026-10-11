@@ -11,9 +11,13 @@ rust-version.workspace = true
 libc = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+vm-fdt = "0.3"
 
 [lints]
 workspace = true
 
 [dependencies.vmuc-hv]
 path = "../vmuc-hv"
+
+[dependencies.vmuc-virtio]
+path = "../vmuc-virtio"

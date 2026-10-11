@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-//! VM lifecycle, guest RAM and memory manager, vCPU threads, PSCI, FDT, kernel loader, PL011/PL031, MMIO bus.
-//!
-//! Skeleton; see `docs/plan.md` for the milestone that fills it in.
+//! The virtual machine monitor: guest RAM, vCPU threads and exit
+//! dispatch, PSCI, the in-kernel GIC, the device tree, the kernel loader
+//! and the PrimeCell devices (PL011, PL031). Virtio devices live in
+//! `vmuc-virtio` and plug into the MMIO bus here.
+
+pub mod fdt;
+pub mod layout;
