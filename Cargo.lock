@@ -1168,6 +1168,7 @@ dependencies = [
  "clap",
  "dirs",
  "libc",
+ "mio",
  "serde",
  "serde_json",
  "tempfile",

@@ -8,6 +8,7 @@
 //! it). A guest reset re-executes the process for a clean VM; the pid
 //! stays the same.
 
+mod forward;
 mod memory;
 mod ready;
 mod server;
@@ -21,7 +22,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, bail};
 use vmuc_config::VmucHome;
 use vmuc_config::paths::instance as files;
-use vmuc_proto::{AgentRequest, EventKind, InstanceStatus, Phase};
+use vmuc_proto::{AgentRequest, EventKind, Forward, InstanceStatus, Phase};
 use vmuc_virtio::devices::balloon::BalloonHandle;
 use vmuc_virtio::devices::blk::{Block, BlockConfig};
 use vmuc_virtio::devices::console::Console;
@@ -56,6 +57,7 @@ pub struct Shared {
     last_reclaim: Mutex<Option<Instant>>,
     pressure_balloon: bool,
     min_available: u64,
+    forwards: Mutex<Vec<Forward>>,
 }
 
 impl Shared {
@@ -221,10 +223,12 @@ fn boot_and_wait(
         last_reclaim: Mutex::new(None),
         pressure_balloon: resolved.memory_policy.pressure_balloon,
         min_available: resolved.memory_policy.min_available.bytes(),
+        forwards: Mutex::new(Vec::new()),
     });
     server::spawn(&inst.dir, Arc::clone(&shared))?;
     ready::spawn(Arc::clone(&shared));
     memory::spawn_responder(Arc::clone(&shared));
+    forward::spawn(Arc::clone(&shared), resolved.port_forwards.clone())?;
     signals::spawn(signals, Arc::clone(&shared))?;
 
     let exit = vm.wait();

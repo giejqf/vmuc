@@ -73,9 +73,7 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
             }
             return;
         }
-        ControlRequest::Forwards => ControlResponse::Error {
-            message: "port forwarding arrives with networking (M6)".into(),
-        },
+        ControlRequest::Forwards => ControlResponse::Forwards(super::forward::list(shared)),
     };
     let _ = write_line(&mut s, &resp);
 }
