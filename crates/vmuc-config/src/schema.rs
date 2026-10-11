@@ -251,10 +251,11 @@ pub struct Ssh {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NetworkMode {
-    /// User-space NAT (the only mode implemented in v0.1).
+    /// vmnet shared mode: macOS runs DHCP and NAT, and the guest gets a
+    /// 192.168.64.x address the host can reach.
     #[default]
     Shared,
-    /// Bridged onto a host interface (out of scope for v0.1; reserved).
+    /// vmnet bridged onto `interface`: the guest takes a lease from the LAN.
     Bridged,
 }
 
