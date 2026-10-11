@@ -20,11 +20,21 @@ const S_IFREG: u32 = 0o100_000;
 #[derive(Debug)]
 pub struct Server {
     fs: Passthrough,
+    xattr: bool,
 }
 
 impl Server {
+    /// Extended attributes are off: the guest kernel asks for
+    /// `security.capability` before every write and for ACLs and labels
+    /// on every `ls -l` entry, a round trip each, and macOS has no use for
+    /// Linux's namespaces. The first ENOSYS makes it stop asking.
     pub fn new(fs: Passthrough) -> Self {
-        Self { fs }
+        Self { fs, xattr: false }
+    }
+
+    /// Passes extended attributes through to the host.
+    pub fn with_xattrs(fs: Passthrough) -> Self {
+        Self { fs, xattr: true }
     }
 
     pub fn fs(&self) -> &Passthrough {
@@ -71,6 +81,11 @@ impl Server {
         let fs = &self.fs;
         let mut w = Writer::default();
         match h.opcode {
+            opcode::GETXATTR | opcode::LISTXATTR | opcode::SETXATTR | opcode::REMOVEXATTR
+                if !self.xattr =>
+            {
+                return Err(linux::ENOSYS);
+            }
             opcode::INIT => return init_reply(r).map_err(bad),
             opcode::DESTROY | opcode::SYNCFS | opcode::INTERRUPT | opcode::FLUSH => {}
             opcode::LOOKUP => {

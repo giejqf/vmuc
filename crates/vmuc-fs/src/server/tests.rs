@@ -292,3 +292,26 @@ fn forget_releases_nodes_and_unknown_opcodes_are_enosys() {
     assert!(f.srv.fs().rel(node).is_err());
     assert_eq!(f.call(9999, ROOT_ID, &[]).0, linux::ENOSYS);
 }
+
+#[test]
+fn xattrs_are_enosys_unless_enabled() {
+    let mut f = fs(false);
+    std::fs::write(f.path("x"), b"").unwrap();
+    let (node, _, _) = f.lookup(ROOT_ID, "x").unwrap();
+    let mut set = Writer::default();
+    set.u32(3).u32(0).bytes(&Fs::name("user.k")).bytes(b"val");
+    assert_eq!(f.call(opcode::SETXATTR, node, &set.0).0, linux::ENOSYS);
+    let mut get = Writer::default();
+    get.u32(0).u32(0).bytes(&Fs::name("security.capability"));
+    assert_eq!(f.call(opcode::GETXATTR, node, &get.0).0, linux::ENOSYS);
+
+    f.srv = Server::with_xattrs(Passthrough::new(f.dir.path(), false).unwrap());
+    let (node, _, _) = f.lookup(ROOT_ID, "x").unwrap();
+    f.ok(opcode::SETXATTR, node, &set.0);
+    let mut get = Writer::default();
+    get.u32(16).u32(0).bytes(&Fs::name("user.k"));
+    assert_eq!(f.ok(opcode::GETXATTR, node, &get.0), b"val");
+    let mut size = Writer::default();
+    size.u32(0).u32(0);
+    assert!(u32_at(&f.ok(opcode::LISTXATTR, node, &size.0), 0) >= 7);
+}

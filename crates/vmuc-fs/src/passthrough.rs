@@ -18,7 +18,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use crate::abi::{Attr, ROOT_ID, setattr};
 use crate::host::{self, linux};
@@ -75,7 +75,8 @@ pub struct Passthrough {
     root: PathBuf,
     read_only: bool,
     inodes: Mutex<Inodes>,
-    handles: Mutex<HashMap<u64, Arc<Handle>>>,
+    /// Read on every READ and WRITE from several request threads.
+    handles: RwLock<HashMap<u64, Arc<Handle>>>,
     next_fh: AtomicU64,
 }
 
@@ -91,7 +92,7 @@ impl Passthrough {
             root,
             read_only,
             inodes: Mutex::new(Inodes::new((meta.dev(), meta.ino()))),
-            handles: Mutex::new(HashMap::new()),
+            handles: RwLock::new(HashMap::new()),
             next_fh: AtomicU64::new(1),
         })
     }
@@ -219,7 +220,7 @@ impl Passthrough {
     pub fn add_handle(&self, h: Handle) -> u64 {
         let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
         self.handles
-            .lock()
+            .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(fh, Arc::new(h));
         fh
@@ -227,7 +228,7 @@ impl Passthrough {
 
     pub fn handle(&self, fh: u64) -> R<Arc<Handle>> {
         self.handles
-            .lock()
+            .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&fh)
             .cloned()
@@ -243,7 +244,7 @@ impl Passthrough {
 
     pub fn release(&self, fh: u64) {
         self.handles
-            .lock()
+            .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&fh);
     }
