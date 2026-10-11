@@ -1,0 +1,384 @@
+// SPDX-License-Identifier: Apache-2.0
+//! virtio-net over a datagram socket: one Ethernet frame per datagram.
+//!
+//! The other end of the socket is `vmuc-vmnet-helper`, which relays
+//! frames to a vmnet interface (or a test peer). One thread runs a mio
+//! loop over the queue doorbell and the socket. Transmit is zero-copy:
+//! the frame goes from the guest's buffers to `sendmsg` with the 12-byte
+//! virtio-net header skipped; a full socket keeps the chain for the next
+//! writable event. Receive copies each datagram once into the guest's
+//! buffers (several with mergeable receive buffers); while the guest has
+//! posted none, frames wait in the kernel socket. No offloads: frames go
+//! to a real bridge, so checksums are the guest's job.
+
+use std::collections::VecDeque;
+use std::io;
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixDatagram;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self, JoinHandle};
+
+use mio::{Events, Interest, Poll, Token, Waker};
+
+use crate::bus::put_le;
+use crate::device::{
+    Activation, Doorbell, VirtioDevice, WakerDoorbell, WorkerCtx, device_type, features,
+};
+use crate::devices::Segments;
+use crate::queue::DescChain;
+
+const F_MTU: u64 = 1 << 3;
+const F_MAC: u64 = 1 << 5;
+const F_MRG_RXBUF: u64 = 1 << 15;
+const F_STATUS: u64 = 1 << 16;
+
+const RX: usize = 0;
+const TX: usize = 1;
+/// `struct virtio_net_hdr_v1`, always 12 bytes with VERSION_1.
+const HDR_LEN: usize = 12;
+const MTU: u16 = 1500;
+/// Largest frame accepted from the socket (jumbo-safe).
+const MAX_FRAME: usize = 65_550;
+const WAKER: Token = Token(0);
+const SOCKET: Token = Token(1);
+const CONTROL: u32 = 1 << 31;
+
+enum Ctrl {
+    Activate(WorkerCtx),
+    Reset(Sender<()>),
+    Shutdown,
+}
+
+struct Loop {
+    poll: Poll,
+    socket: mio::net::UnixDatagram,
+    doorbell: Arc<WakerDoorbell>,
+    ctrl: Receiver<Ctrl>,
+    ctx: Option<WorkerCtx>,
+    /// A transmit chain the socket could not take yet.
+    tx_pending: Option<DescChain>,
+    /// Receive chains popped but not filled (the socket ran dry, or a
+    /// frame needed more buffers than were posted): used first next time.
+    rx_spare: VecDeque<DescChain>,
+    /// The socket may hold frames (edge-triggered readiness remembered).
+    readable: bool,
+    frame: Vec<u8>,
+}
+
+impl Loop {
+    fn run(mut self) {
+        let mut events = Events::with_capacity(16);
+        loop {
+            if let Err(e) = self.poll.poll(&mut events, None) {
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                tracing::error!("virtio-net poll: {e}");
+                return;
+            }
+            let mut bits = 0;
+            let mut writable = false;
+            for ev in &events {
+                if ev.token() == WAKER {
+                    bits |= self.doorbell.take();
+                } else {
+                    self.readable |= ev.is_readable();
+                    writable |= ev.is_writable();
+                }
+            }
+            if bits & CONTROL != 0 && !self.control() {
+                return;
+            }
+            if self.ctx.is_none() {
+                continue;
+            }
+            if bits & (1 << TX) != 0 || writable {
+                self.transmit();
+            }
+            self.receive();
+        }
+    }
+
+    fn control(&mut self) -> bool {
+        while let Ok(msg) = self.ctrl.try_recv() {
+            match msg {
+                Ctrl::Activate(ctx) => {
+                    self.ctx = Some(ctx);
+                    self.readable = true;
+                }
+                Ctrl::Reset(ack) => {
+                    self.ctx = None;
+                    self.tx_pending = None;
+                    self.rx_spare.clear();
+                    let _ = ack.send(());
+                }
+                Ctrl::Shutdown => return false,
+            }
+        }
+        true
+    }
+
+    /// Sends a chain's frame (header skipped) straight from guest memory.
+    /// `Ok(false)` when the socket is full.
+    fn send_chain(&self, ctx: &WorkerCtx, chain: &DescChain) -> io::Result<bool> {
+        let (_, frame) = Segments::readable(chain).split_at(HDR_LEN as u64);
+        let mut iov = frame.iovecs(&ctx.mem).map_err(io::Error::other)?;
+        // SAFETY: a zeroed msghdr is valid; we fill the iovec fields.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = iov.as_mut_ptr();
+        msg.msg_iovlen = iov.len().min(1024) as _;
+        // SAFETY: the iovecs point into guest buffers validated above.
+        let n = unsafe { libc::sendmsg(self.socket.as_raw_fd(), &raw const msg, 0) };
+        if n >= 0 {
+            return Ok(true);
+        }
+        let e = io::Error::last_os_error();
+        match e.kind() {
+            io::ErrorKind::WouldBlock => Ok(false),
+            // A frame larger than the socket allows: drop it, as a NIC would.
+            _ if e.raw_os_error() == Some(libc::EMSGSIZE) => Ok(true),
+            _ => Err(e),
+        }
+    }
+
+    fn transmit(&mut self) {
+        let Some(mut ctx) = self.ctx.take() else {
+            return;
+        };
+        let mem = ctx.mem.clone();
+        loop {
+            let popped = self
+                .tx_pending
+                .take()
+                .or_else(|| ctx.queues[TX].pop(&mem).ok().flatten());
+            let Some(chain) = popped else {
+                let _ = ctx.queues[TX].publish_used(&mem);
+                if ctx.queues[TX].enable_notification(&mem).unwrap_or(false) {
+                    continue;
+                }
+                break;
+            };
+            match self.send_chain(&ctx, &chain) {
+                Ok(true) => {
+                    let _ = ctx.queues[TX].add_used(&mem, chain.head, 0);
+                }
+                Ok(false) => {
+                    self.tx_pending = Some(chain);
+                    let _ = ctx.queues[TX].publish_used(&mem);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("virtio-net send: {e}");
+                    let _ = ctx.queues[TX].add_used(&mem, chain.head, 0);
+                }
+            }
+        }
+        if ctx.queues[TX].needs_interrupt(&mem).unwrap_or(true) {
+            ctx.irq.signal_used();
+        }
+        self.ctx = Some(ctx);
+    }
+
+    fn receive(&mut self) {
+        if !self.readable {
+            return;
+        }
+        let Some(mut ctx) = self.ctx.take() else {
+            return;
+        };
+        let mem = ctx.mem.clone();
+        let mergeable = ctx.features & F_MRG_RXBUF != 0;
+        let mut used_any = false;
+        loop {
+            // A buffer first: a frame taken off the socket cannot go back.
+            let popped = self
+                .rx_spare
+                .pop_front()
+                .or_else(|| ctx.queues[RX].pop(&mem).ok().flatten());
+            let Some(first) = popped else {
+                if ctx.queues[RX].enable_notification(&mem).unwrap_or(false) {
+                    continue;
+                }
+                break;
+            };
+            self.frame.resize(HDR_LEN + MAX_FRAME, 0);
+            let n = match self.socket.recv(&mut self.frame[HDR_LEN..]) {
+                Ok(n) => n,
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::WouldBlock {
+                        self.readable = false;
+                    } else {
+                        tracing::warn!("virtio-net recv: {e}");
+                    }
+                    self.rx_spare.push_front(first);
+                    break;
+                }
+            };
+            let total = HDR_LEN + n;
+            self.frame[..HDR_LEN].fill(0);
+            // Spread the frame over as many chains as it needs.
+            let mut room = Segments::writable(&first).len();
+            let mut chains = vec![first];
+            while room < total as u64 && mergeable {
+                let next = self
+                    .rx_spare
+                    .pop_front()
+                    .or_else(|| ctx.queues[RX].pop(&mem).ok().flatten());
+                let Some(next) = next else { break };
+                room += Segments::writable(&next).len();
+                chains.push(next);
+            }
+            if room < total as u64 {
+                // Too few buffers for this frame: drop it, as a NIC with a
+                // full ring would, and keep the buffers for the next one.
+                tracing::debug!(len = n, "virtio-net: frame dropped, not enough rx buffers");
+                for c in chains.into_iter().rev() {
+                    self.rx_spare.push_front(c);
+                }
+                continue;
+            }
+            let count = chains.len() as u16;
+            self.frame[10..12].copy_from_slice(&count.to_le_bytes());
+            let mut at = 0;
+            for c in &chains {
+                let out = Segments::writable(c);
+                let take = (out.len() as usize).min(total - at);
+                let wrote = out
+                    .write_from(&mem, &self.frame[at..at + take])
+                    .unwrap_or(0);
+                at += wrote;
+                let _ = ctx.queues[RX].add_used(&mem, c.head, wrote as u32);
+            }
+            used_any = true;
+        }
+        if used_any {
+            let _ = ctx.queues[RX].publish_used(&mem);
+            if ctx.queues[RX].needs_interrupt(&mem).unwrap_or(true) {
+                ctx.irq.signal_used();
+            }
+        }
+        self.ctx = Some(ctx);
+    }
+}
+
+pub struct Net {
+    config: [u8; 12],
+    doorbell: Arc<WakerDoorbell>,
+    ctrl: Sender<Ctrl>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Net {
+    /// A NIC with `mac` whose frames travel over `socket` (a connected
+    /// `SOCK_DGRAM` unix socket, one frame per datagram).
+    pub fn new(mac: [u8; 6], socket: UnixDatagram) -> io::Result<Self> {
+        socket.set_nonblocking(true)?;
+        let poll = Poll::new()?;
+        let doorbell = Arc::new(WakerDoorbell::new(Waker::new(poll.registry(), WAKER)?, 2));
+        let mut socket = mio::net::UnixDatagram::from_std(socket);
+        poll.registry()
+            .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
+        let (ctrl, rx) = mpsc::channel();
+        let event_loop = Loop {
+            poll,
+            socket,
+            doorbell: Arc::clone(&doorbell),
+            ctrl: rx,
+            ctx: None,
+            tx_pending: None,
+            rx_spare: VecDeque::new(),
+            readable: false,
+            frame: Vec::new(),
+        };
+        let thread = thread::Builder::new()
+            .name("virtio-net".into())
+            .spawn(move || event_loop.run())?;
+        let mut config = [0u8; 12];
+        config[0..6].copy_from_slice(&mac);
+        config[6..8].copy_from_slice(&1u16.to_le_bytes()); // VIRTIO_NET_S_LINK_UP
+        config[8..10].copy_from_slice(&1u16.to_le_bytes()); // one queue pair
+        config[10..12].copy_from_slice(&MTU.to_le_bytes());
+        Ok(Self {
+            config,
+            doorbell,
+            ctrl,
+            thread: Some(thread),
+        })
+    }
+
+    fn send(&self, msg: Ctrl) -> bool {
+        let ok = self.ctrl.send(msg).is_ok();
+        self.doorbell.ring_bits(CONTROL);
+        ok
+    }
+}
+
+impl Drop for Net {
+    fn drop(&mut self) {
+        self.send(Ctrl::Shutdown);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+impl VirtioDevice for Net {
+    fn device_type(&self) -> u32 {
+        device_type::NET
+    }
+    fn features(&self) -> u64 {
+        features::RING_EVENT_IDX
+            | features::RING_INDIRECT_DESC
+            | F_MAC
+            | F_STATUS
+            | F_MRG_RXBUF
+            | F_MTU
+    }
+    fn queue_max_sizes(&self) -> Vec<u16> {
+        vec![256, 256]
+    }
+    fn read_config(&self, offset: u64, data: &mut [u8]) {
+        let off = offset as usize;
+        if off + data.len() <= self.config.len() {
+            data.copy_from_slice(&self.config[off..off + data.len()]);
+        } else {
+            put_le(data, 0);
+        }
+    }
+    fn activate(&mut self, act: Activation) -> Result<(), String> {
+        let ctx = WorkerCtx {
+            mem: act.mem,
+            queues: act.queues,
+            irq: act.irq,
+            features: act.features,
+        };
+        if !self.send(Ctrl::Activate(ctx)) {
+            return Err("virtio-net loop is gone".into());
+        }
+        self.doorbell.ring_bits(0b11);
+        Ok(())
+    }
+    fn reset(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        if self.send(Ctrl::Reset(tx)) {
+            let _ = rx.recv();
+        }
+    }
+    fn doorbell(&self) -> Arc<dyn Doorbell> {
+        self.doorbell.clone()
+    }
+}
+
+/// `0a:56:4d:d2:a4:d4` → bytes.
+pub fn parse_mac(s: &str) -> Option<[u8; 6]> {
+    let mut mac = [0u8; 6];
+    let mut parts = s.split(':');
+    for b in &mut mac {
+        *b = u8::from_str_radix(parts.next()?, 16).ok()?;
+    }
+    parts.next().is_none().then_some(mac)
+}
+
+#[cfg(test)]
+mod tests;
