@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Device models, and a byte-stream view of descriptor chains they share.
 
+pub mod blk;
+
 pub mod rng;
 
 use crate::mem::{Gpa, GuestMemory, MemResult};

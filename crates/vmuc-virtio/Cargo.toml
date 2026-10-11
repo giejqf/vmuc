@@ -12,5 +12,12 @@ libc = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dependencies.vmuc-image]
+path = "../vmuc-image"
+default-features = false
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

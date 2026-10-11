@@ -1253,8 +1253,10 @@ name = "vmuc-virtio"
 version = "0.1.0-dev"
 dependencies = [
  "libc",
+ "tempfile",
  "thiserror",
  "tracing",
+ "vmuc-image",
 ]
 
 [[package]]
