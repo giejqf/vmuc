@@ -8,9 +8,10 @@ Hypervisor.framework directly. What sets it apart is memory: the guest
 sees a generous ceiling, the host pays only for pages the guest touches,
 and memory the guest frees goes back to macOS within seconds.
 
-Status: pre-alpha, milestone M0/M1. Nothing boots yet. See
-`docs/plan.md` for the roadmap and `docs/feasibility.md` for why this
-works.
+Status: pre-alpha, milestone M2. The VMM boots the guest kernel to a
+busybox shell on Hypervisor.framework (`vmuc _boot`); disks, networking
+and the instance lifecycle come next. See `docs/plan.md` for the roadmap
+and `docs/feasibility.md` for why this works.
 
 ## Requirements
 
@@ -25,7 +26,8 @@ builds and tests there. See `AGENTS.md` for the workflow and
 
 ```
 make check        # fmt, clippy, tests, darwin cross-check
-make kernel       # cross-build the guest kernel and boot it under QEMU
+make kernel       # cross-build the guest kernel and boot it under QEMU (Linux)
+make e2e          # boot real VMs (on an Apple silicon Mac)
 make mac-test     # rsync to $VMUC_MAC and run the test suite there
 ```
 
