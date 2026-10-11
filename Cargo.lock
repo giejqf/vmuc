@@ -1279,6 +1279,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "vmuc-fs",
  "vmuc-image",
 ]
 

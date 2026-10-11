@@ -13,6 +13,9 @@ mio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dependencies.vmuc-fs]
+path = "../vmuc-fs"
+
 [dependencies.vmuc-image]
 path = "../vmuc-image"
 default-features = false
