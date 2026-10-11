@@ -1,8 +1,9 @@
-# The guest agent is a static musl binary. On a Linux dev box the GNU
-# cross toolchain drives the link; Rust's musl target is self-contained so
-# no musl sysroot is needed.
+# The guest agent is a static musl binary. Rust's musl target is
+# self-contained (crt objects and libc.a ship with it) and rust-lld ships
+# with the toolchain, so the same link works on a Linux box and on a Mac
+# with no cross toolchain or musl sysroot.
 [target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-gnu-gcc"
+linker = "rust-lld"
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-self-contained=yes"]
 
 [alias]
