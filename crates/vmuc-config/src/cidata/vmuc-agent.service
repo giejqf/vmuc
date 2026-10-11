@@ -1,7 +1,14 @@
 [Unit]
 Description=vmuc guest agent
 Documentation=https://github.com/giejqf/vmuc
-After=network.target
+# The agent needs local disks and vsock, nothing else, and is installed
+# from cloud-init's bootcmd (inside cloud-init.service, which is ordered
+# before sysinit.target): default dependencies would hold it back until
+# cloud-init finished, and `vmuc start` waits for it.
+DefaultDependencies=no
+After=local-fs.target
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=simple

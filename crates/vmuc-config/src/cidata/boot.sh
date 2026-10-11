@@ -5,6 +5,8 @@
 # started by /var/lib/cloud/scripts/per-boot/00-vmuc.boot.sh. Installs
 # the agent, runs the built-in boot scripts and the provisioning scripts,
 # then signals the host by writing the boot ID to /run/vmuc-boot-done.
+# `boot.sh agent` (from cloud-init's bootcmd) only installs and starts
+# the agent, early in boot.
 set -eu
 
 INFO() {
@@ -53,10 +55,21 @@ install_agent() {
 		mv -f "${dst}.tmp" "${dst}"
 	fi
 	if command -v systemctl >/dev/null 2>&1; then
-		systemctl daemon-reload
-		systemctl enable --now vmuc-agent.service
+		unit=/etc/systemd/system/vmuc-agent.service
+		if ! cmp -s "${VMUC_CIDATA_MNT}/vmuc-agent.service" "${unit}"; then
+			cp "${VMUC_CIDATA_MNT}/vmuc-agent.service" "${unit}"
+			changed=1
+		fi
 		if [ "${changed}" = 1 ]; then
-			systemctl restart vmuc-agent.service
+			systemctl daemon-reload
+		fi
+		systemctl enable vmuc-agent.service >/dev/null 2>&1
+		# --no-block: bootcmd runs inside cloud-init.service, and a blocking
+		# start from there would wait on (or deadlock with) boot ordering.
+		if [ "${changed}" = 1 ]; then
+			systemctl restart --no-block vmuc-agent.service
+		else
+			systemctl start --no-block vmuc-agent.service
 		fi
 	elif command -v rc-update >/dev/null 2>&1; then
 		cp "${VMUC_CIDATA_MNT}/vmuc-agent.openrc" /etc/init.d/vmuc-agent
@@ -115,6 +128,9 @@ run_user_scripts() {
 }
 
 install_agent
+if [ "${1:-}" = agent ]; then
+	exit 0
+fi
 run_scripts "${VMUC_CIDATA_MNT}/boot"
 run_scripts "${VMUC_CIDATA_MNT}/provision.data"
 run_scripts "${VMUC_CIDATA_MNT}/provision.system"

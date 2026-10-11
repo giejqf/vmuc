@@ -103,12 +103,13 @@ impl VmucHome {
             .ok_or(Error::NoHomeDir)
     }
 
-    /// The instance directory after validating the name and that the
-    /// control socket path fits the platform limit.
+    /// The instance directory after validating the name and that every
+    /// socket path in it (the longest is `console.sock`) fits the
+    /// platform limit.
     pub fn instance_dir(&self, name: &str) -> Result<PathBuf> {
         validate_instance_name(name)?;
         let dir = self.0.join(name);
-        validate_socket_path(&dir.join(instance::VMM_SOCK))?;
+        validate_socket_path(&dir.join(instance::CONSOLE_SOCK))?;
         Ok(dir)
     }
 
@@ -234,7 +235,7 @@ mod tests {
         // 103 bytes exactly is fine, 104 is not.
         let base = "/".to_owned() + &"d".repeat(79); // 80 bytes
         let home = VmucHome::new(&base);
-        let name = "n".repeat(103 - 80 - 1 - 1 - instance::VMM_SOCK.len());
+        let name = "n".repeat(103 - 80 - 1 - 1 - instance::CONSOLE_SOCK.len());
         assert!(home.instance_dir(&name).is_ok());
         let name = name + "n";
         let err = home.instance_dir(&name).unwrap_err().to_string();

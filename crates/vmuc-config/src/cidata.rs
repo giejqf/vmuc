@@ -95,6 +95,7 @@ pub fn render_seed(
             render_etc_environment_script(resolved),
         ),
         SeedFile::script("vmuc-agent.openrc", AGENT_OPENRC),
+        SeedFile::text("vmuc-agent.service", AGENT_UNIT),
     ];
     for (i, p) in resolved.provision.iter().enumerate() {
         match p {
@@ -153,7 +154,15 @@ struct CloudConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     resolv_conf: Option<ResolvConf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    bootcmd: Vec<String>,
+    bootcmd: Vec<BootCmd>,
+}
+
+/// A bootcmd entry: a shell snippet, or an argv run without a shell.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum BootCmd {
+    Shell(String),
+    Argv(Vec<String>),
 }
 
 #[derive(Serialize)]
@@ -195,13 +204,20 @@ fn render_user_data(
 ) -> String {
     let user = &resolved.user;
     let param_exports = param_exports(resolved);
-    let bootcmd = resolved
-        .provision
-        .iter()
-        .filter_map(|p| match p {
-            ResolvedProvision::Boot { script } => Some(format!("{param_exports}{script}")),
+    // First: start the agent from the seed, long before the per-boot
+    // stage. bootcmd runs before write_files, so the hook runs inline.
+    let early_agent = BootCmd::Argv(
+        ["sh", "-c", PER_BOOT_HOOK, "vmuc-early", "agent"]
+            .map(str::to_owned)
+            .to_vec(),
+    );
+    let bootcmd = std::iter::once(early_agent)
+        .chain(resolved.provision.iter().filter_map(|p| match p {
+            ResolvedProvision::Boot { script } => {
+                Some(BootCmd::Shell(format!("{param_exports}{script}")))
+            }
             _ => None,
-        })
+        }))
         .collect();
     let config = CloudConfig {
         growpart: Growpart {
@@ -222,20 +238,12 @@ fn render_user_data(
             lock_passwd: true,
             ssh_authorized_keys: ssh_pub_keys,
         }],
-        write_files: vec![
-            WriteFile {
-                path: AGENT_UNIT_PATH,
-                owner: "root:root",
-                permissions: "0644",
-                content: AGENT_UNIT,
-            },
-            WriteFile {
-                path: PER_BOOT_HOOK_PATH,
-                owner: "root:root",
-                permissions: "0755",
-                content: PER_BOOT_HOOK,
-            },
-        ],
+        write_files: vec![WriteFile {
+            path: PER_BOOT_HOOK_PATH,
+            owner: "root:root",
+            permissions: "0755",
+            content: PER_BOOT_HOOK,
+        }],
         mounts: mounts
             .iter()
             .map(|m| {
@@ -477,6 +485,7 @@ timezone: Europe/Berlin
                 "boot/05-mounts.sh",
                 "boot/10-etc-environment.sh",
                 "vmuc-agent.openrc",
+                "vmuc-agent.service",
                 "provision.system/01.sh",
                 "provision.user/02.sh",
                 "provision.data/03",
@@ -533,18 +542,16 @@ timezone: Europe/Berlin
         assert_eq!(user["lock_passwd"], true);
         assert_eq!(user["ssh_authorized_keys"][0], "ssh-ed25519 AAAA alice@mac");
         let wf = &v["write_files"];
-        assert_eq!(wf[0]["path"], AGENT_UNIT_PATH);
-        let unit = wf[0]["content"].as_str().unwrap();
-        assert!(unit.contains("ExecStart=/usr/local/bin/vmuc-agent"));
-        assert!(unit.contains("Restart=always"));
-        assert!(unit.contains("After=network.target"));
-        assert!(unit.contains("User=root"));
-        assert_eq!(wf[1]["path"], PER_BOOT_HOOK_PATH);
-        assert_eq!(wf[1]["permissions"], "0755");
-        let hook = wf[1]["content"].as_str().unwrap();
+        assert_eq!(wf[0]["path"], PER_BOOT_HOOK_PATH);
+        assert_eq!(wf[0]["permissions"], "0755");
+        let hook = wf[0]["content"].as_str().unwrap();
         assert_eq!(hook, PER_BOOT_HOOK);
         assert!(hook.contains("/dev/disk/by-label/cidata"));
-        assert!(hook.contains("exec \"${VMUC_CIDATA_MNT}/boot.sh\""));
+        assert!(hook.contains("exec \"${VMUC_CIDATA_MNT}/boot.sh\" \"$@\""));
+        let early = &v["bootcmd"][0];
+        assert_eq!(early[0], "sh");
+        assert_eq!(early[2].as_str().unwrap(), PER_BOOT_HOOK);
+        assert_eq!(early[4], "agent");
         let m = &v["mounts"];
         assert_eq!(m[0][0], "mount0");
         assert_eq!(m[0][1], "/Users/alice");
@@ -555,7 +562,7 @@ timezone: Europe/Berlin
         assert_eq!(v["timezone"], "Europe/Berlin");
         assert_eq!(v["manage_resolv_conf"], true);
         assert_eq!(v["resolv_conf"]["nameservers"][0], "1.1.1.1");
-        let boot = v["bootcmd"][0].as_str().unwrap();
+        let boot = v["bootcmd"][1].as_str().unwrap();
         assert!(
             boot.starts_with("export VMUC_PARAM_SNAPSHOTTER='o'\\''verlay'\n"),
             "{boot}"
@@ -572,7 +579,11 @@ timezone: Europe/Berlin
         assert!(v.get("mounts").is_none());
         assert!(v.get("resolv_conf").is_none());
         assert!(v.get("manage_resolv_conf").is_none());
-        assert!(v.get("bootcmd").is_none());
+        assert_eq!(
+            v["bootcmd"].as_sequence().unwrap().len(),
+            1,
+            "only the early agent"
+        );
         assert!(v["users"][0].get("gecos").is_none());
         assert_eq!(v["users"][0]["sudo"], "ALL=(ALL) ALL");
         assert_eq!(
@@ -618,7 +629,10 @@ timezone: Europe/Berlin
         assert!(BOOT_SH.contains(". \"${VMUC_CIDATA_MNT}/vmuc.env\""));
         assert!(BOOT_SH.contains("sha256sum"));
         assert!(BOOT_SH.contains("systemctl daemon-reload"));
-        assert!(BOOT_SH.contains("systemctl enable --now vmuc-agent.service"));
+        assert!(BOOT_SH.contains("systemctl start --no-block vmuc-agent.service"));
+        assert!(BOOT_SH.contains("if [ \"${1:-}\" = agent ]; then"));
+        assert!(AGENT_UNIT.contains("DefaultDependencies=no"));
+        assert!(AGENT_UNIT.contains("ExecStart=/usr/local/bin/vmuc-agent"));
         assert!(BOOT_SH.contains("run_scripts \"${VMUC_CIDATA_MNT}/boot\""));
         assert!(BOOT_SH.contains("run_scripts \"${VMUC_CIDATA_MNT}/provision.system\""));
         assert!(BOOT_SH.contains("echo \"${VMUC_BOOT_ID}\" >/run/vmuc-boot-done"));
