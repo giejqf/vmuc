@@ -1,0 +1,97 @@
+diff --git a/crates/vmuc-virtio/src/device.rs b/crates/vmuc-virtio/src/device.rs
+index b475584..28a5d52 100644
+--- a/crates/vmuc-virtio/src/device.rs
++++ b/crates/vmuc-virtio/src/device.rs
+@@ -48,6 +48,8 @@ pub const INT_CONFIG: u32 = 2;
+ pub struct IrqStatus {
+     status: Mutex<u32>,
+     line: Arc<dyn Interrupt>,
++    raised: std::sync::atomic::AtomicU64,
++    stats: Mutex<(u64, u64, u64)>,
+ }
+ 
+ impl std::fmt::Debug for IrqStatus {
+@@ -61,6 +63,8 @@ impl IrqStatus {
+         Self {
+             status: Mutex::new(0),
+             line,
++            raised: std::sync::atomic::AtomicU64::new(0),
++            stats: Mutex::new((0, 0, 0)),
+         }
+     }
+ 
+@@ -83,7 +87,12 @@ impl IrqStatus {
+         let was = *s;
+         *s |= bits;
+         if was == 0 {
++            let t = now_ns();
+             self.line.set_level(true);
++            let set = now_ns() - t;
++            self.raised.store(t, Ordering::SeqCst);
++            let mut st = self.stats.lock().unwrap();
++            st.2 += set;
+         }
+     }
+ 
+@@ -93,6 +102,13 @@ impl IrqStatus {
+         *s &= !bits;
+         if was != 0 && *s == 0 {
+             self.line.set_level(false);
++            let lat = now_ns().saturating_sub(self.raised.load(Ordering::SeqCst));
++            let mut st = self.stats.lock().unwrap();
++            st.0 += 1;
++            st.1 += lat;
++            if st.0 % 50000 == 0 {
++                eprintln!("irq: acks={} raise_to_ack_us={:.1} set_level_us={:.2}", st.0, st.1 as f64 / st.0 as f64 / 1e3, st.2 as f64 / st.0 as f64 / 1e3);
++            }
+         }
+     }
+ 
+@@ -143,11 +159,18 @@ const CONTROL: u32 = 1 << 31;
+ pub struct ParkDoorbell {
+     pending: AtomicU32,
+     thread: OnceLock<Thread>,
++    rung: std::sync::atomic::AtomicU64,
++}
++
++fn now_ns() -> u64 {
++    static T0: OnceLock<std::time::Instant> = OnceLock::new();
++    T0.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
+ }
+ 
+ impl ParkDoorbell {
+     /// Sets `bits` and wakes the worker.
+     pub fn ring_bits(&self, bits: u32) {
++        self.rung.store(now_ns(), Ordering::SeqCst);
+         self.pending.fetch_or(bits, Ordering::SeqCst);
+         if let Some(t) = self.thread.get() {
+             t.unpark();
+@@ -156,11 +179,28 @@ impl ParkDoorbell {
+ 
+     /// Blocks the bound thread until some bit is set; returns and clears them.
+     fn wait(&self) -> u32 {
++        thread_local! { static ST: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) }; }
++        let spin: u64 = std::env::var("VMUC_SPIN_NS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
++        let start = now_ns();
+         loop {
+             let bits = self.pending.swap(0, Ordering::SeqCst);
+             if bits != 0 {
++                let lat = now_ns().saturating_sub(self.rung.load(Ordering::SeqCst));
++                ST.with(|c| {
++                    let (n, sum, parked) = c.get();
++                    let parked = parked + u64::from(now_ns() - start > spin);
++                    let (n, sum) = (n + 1, sum + lat);
++                    if n % 50000 == 0 {
++                        eprintln!("{:?}: wakes={n} avg_wake_us={:.1} parked={parked}", thread::current().name(), sum as f64 / n as f64 / 1e3);
++                    }
++                    c.set((n, sum, parked));
++                });
+                 return bits;
+             }
++            if now_ns() - start < spin {
++                std::hint::spin_loop();
++                continue;
++            }
+             thread::park();
+         }
+     }
