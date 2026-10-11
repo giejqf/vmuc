@@ -2,7 +2,8 @@
 //! `vmuc _vmm NAME`: the process that owns one instance's VM.
 //!
 //! Spawned detached by `vmuc start`. It renders a fresh seed (new boot
-//! ID), builds the machine (disk, seed, vsock, hvc0, rng), records its
+//! ID), builds the machine (disk, seed, vsock, hvc0, rng, NIC, virtiofs
+//! shares), records its
 //! pid, serves `vmm.sock`, probes readiness into `events.jsonl`, and on
 //! SIGTERM/SIGINT asks the guest to power off (a second signal forces
 //! it). A guest reset re-executes the process for a clean VM; the pid
@@ -13,6 +14,7 @@ mod memory;
 mod network;
 mod ready;
 mod server;
+mod shares;
 mod signals;
 
 use std::fs::{File, OpenOptions};
@@ -160,7 +162,9 @@ fn boot_and_wait(
     let events = EventLog::create(&inst.dir)?;
     let kernel_path = assets::kernel()?;
     let agent = assets::agent()?;
-    let boot_id = instance::write_seed(home, inst, &resolved, Some(&agent), false)?;
+    let fs_shares = shares::open(&resolved, &events);
+    let mounts: Vec<_> = fs_shares.iter().map(|s| s.mount.clone()).collect();
+    let boot_id = instance::write_seed(home, inst, &resolved, Some(&agent), &mounts)?;
     events.push(EventKind::Booting {
         boot_id: boot_id.clone(),
     });
@@ -208,6 +212,8 @@ fn boot_and_wait(
     let (balloon, reclaim) = b.add_balloon()?;
     // Last, so disks keep their names: the NIC, when the helper starts.
     let _helper = network::attach(&mut b, &resolved, &events);
+    // After the NIC, so its slot does not depend on the mounts.
+    shares::attach(&mut b, fs_shares)?;
     // Mapped, not read: a heap copy would stay billed for the VM's life.
     let kernel =
         MappedFile::open(&kernel_path).with_context(|| kernel_path.display().to_string())?;

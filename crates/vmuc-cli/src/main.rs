@@ -350,8 +350,12 @@ fn main() -> anyhow::Result<()> {
         } => {
             let inst = instance::Instance::open(&home, &name)?;
             let resolved = inst.resolved(&home)?;
-            let boot_id =
-                instance::write_seed(&home, &inst, &resolved, agent.as_deref(), !no_mounts)?;
+            let mounts = if no_mounts {
+                Vec::new()
+            } else {
+                instance::seed_mounts(&resolved)
+            };
+            let boot_id = instance::write_seed(&home, &inst, &resolved, agent.as_deref(), &mounts)?;
             println!(
                 "{}",
                 serde_json::json!({ "bootId": boot_id, "seed": inst.seed() })

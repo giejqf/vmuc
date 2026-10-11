@@ -1175,6 +1175,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vmuc-config",
+ "vmuc-fs",
  "vmuc-hv",
  "vmuc-image",
  "vmuc-net",

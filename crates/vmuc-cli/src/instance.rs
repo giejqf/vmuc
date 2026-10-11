@@ -305,22 +305,17 @@ pub fn write_seed(
     inst: &Instance,
     resolved: &ResolvedConfig,
     agent: Option<&Path>,
-    with_mounts: bool,
+    mounts: &[SeedMount],
 ) -> anyhow::Result<String> {
     let boot_id = vmuc_config::new_boot_id();
     let pub_keys = crate::keys::authorized_keys(home, resolved.ssh.load_dot_ssh_pub_keys)?;
     let agent_bytes = agent.map(fs::read).transpose()?;
-    let mounts = if with_mounts {
-        seed_mounts(resolved)
-    } else {
-        Vec::new()
-    };
     let files = vmuc_config::render_seed(
         resolved,
         &boot_id,
         &pub_keys,
         agent_bytes.as_deref(),
-        &mounts,
+        mounts,
     );
     let iso_files: Vec<vmuc_image::SeedFile> = files
         .into_iter()
