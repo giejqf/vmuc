@@ -22,10 +22,17 @@ lzma-rs = { workspace = true }
 # natively. On macOS the system Security.framework is used through
 # native-tls (pure Rust FFI, like vmuc-hv); elsewhere rustls.
 [target.'cfg(target_os = "macos")'.dependencies]
-ureq = { workspace = true, features = ["native-tls"] }
+ureq = { workspace = true, features = ["native-tls"], optional = true }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-ureq = { workspace = true, features = ["rustls"] }
+ureq = { workspace = true, features = ["rustls"], optional = true }
+
+# HTTP downloads. Off for crates that only need the sparse-file, GPT or
+# qcow2 pieces (the block device), so the VMM's device models do not
+# depend on a TLS stack.
+[features]
+default = ["fetch"]
+fetch = ["dep:ureq"]
 
 [lints]
 workspace = true

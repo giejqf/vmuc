@@ -19,7 +19,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::digest::{Digest, DigestWriter};
 use crate::sparse::SparseWriter;
@@ -218,31 +217,51 @@ impl Source {
                 copy_with_progress(file, out, total, progress)?;
                 Ok("application/octet-stream".to_owned())
             }
-            Self::Http(url) => {
-                let agent = ureq::Agent::new_with_config(
-                    ureq::Agent::config_builder()
-                        .user_agent(concat!("vmuc/", env!("CARGO_PKG_VERSION")))
-                        .timeout_connect(Some(Duration::from_secs(30)))
-                        .timeout_recv_response(Some(Duration::from_secs(60)))
-                        .build(),
-                );
-                let response = agent.get(url).call().map_err(|e| Error::Http {
-                    url: url.clone(),
-                    source: Box::new(e),
-                })?;
-                let content_type = response
-                    .headers()
-                    .get("content-type")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("application/octet-stream")
-                    .to_owned();
-                let body = response.into_body();
-                let total = body.content_length();
-                copy_with_progress(body.into_reader(), out, total, progress)?;
-                Ok(content_type)
-            }
+            Self::Http(url) => fetch_http(url, out, progress),
         }
     }
+}
+
+#[cfg(feature = "fetch")]
+fn fetch_http(
+    url: &str,
+    out: &mut impl Write,
+    progress: &mut impl FnMut(u64, Option<u64>),
+) -> Result<String> {
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .user_agent(concat!("vmuc/", env!("CARGO_PKG_VERSION")))
+            .timeout_connect(Some(std::time::Duration::from_secs(30)))
+            .timeout_recv_response(Some(std::time::Duration::from_secs(60)))
+            .build(),
+    );
+    let response = agent.get(url).call().map_err(|e| Error::Http {
+        url: url.to_owned(),
+        source: Box::new(e),
+    })?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let body = response.into_body();
+    let total = body.content_length();
+    copy_with_progress(body.into_reader(), out, total, progress)?;
+    Ok(content_type)
+}
+
+/// Built without the `fetch` feature (device models need the sparse-file
+/// helpers, not TLS): only `file://` sources work.
+#[cfg(not(feature = "fetch"))]
+fn fetch_http(
+    url: &str,
+    _out: &mut impl Write,
+    _progress: &mut impl FnMut(u64, Option<u64>),
+) -> Result<String> {
+    Err(Error::UnsupportedUrl(format!(
+        "{url} (built without the fetch feature)"
+    )))
 }
 
 fn copy_with_progress(

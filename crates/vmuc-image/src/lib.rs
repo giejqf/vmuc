@@ -78,6 +78,7 @@ pub enum Error {
     UnsupportedUrl(String),
 
     /// The HTTP transfer failed (connection, TLS, non-2xx status, ...).
+    #[cfg(feature = "fetch")]
     #[error("fetching {url}: {source}")]
     Http {
         /// The URL being fetched.
