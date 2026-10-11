@@ -58,7 +58,6 @@ pub fn stat(shared: &Shared) -> Stat {
         .balloon
         .stats()
         .map_or((0, 0), |(_, s)| (s.total, s.available));
-    let c = &shared.machine.counts;
     Stat {
         host_footprint: host_footprint(),
         guest_total,
@@ -68,7 +67,8 @@ pub fn stat(shared: &Shared) -> Stat {
         balloon: shared.balloon.actual(),
         release_p50_us: r.latency_quantile_us(500),
         release_p99_us: r.latency_quantile_us(990),
-        vcpu_exec_nanos: c.reclaim_faults.load(Ordering::Relaxed),
+        // Per-vCPU execution time is not collected yet.
+        vcpu_exec_nanos: 0,
     }
 }
 
