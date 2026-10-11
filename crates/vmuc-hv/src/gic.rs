@@ -110,8 +110,9 @@ impl Gic {
 
     /// Asserts (`true`) or deasserts a shared peripheral interrupt.
     /// `intid` is the GIC INTID (32 and up), not the FDT SPI number.
+    /// Callable from any device thread once the GIC exists.
     #[inline]
-    pub fn set_spi(&self, intid: u32, level: bool) -> HvResult<()> {
+    pub fn set_spi(intid: u32, level: bool) -> HvResult<()> {
         // SAFETY: GIC exists.
         error::check(unsafe { ffi::hv_gic_set_spi(intid, level) })
     }

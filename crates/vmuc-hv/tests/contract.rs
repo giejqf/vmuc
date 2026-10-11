@@ -147,8 +147,7 @@ fn run_probes() -> Result<(Geometry, Vec<Observed>), HvError> {
         .expect("vCPU thread died before creating its vCPU");
     let kicker = thread::spawn(move || {
         thread::sleep(Duration::from_millis(300));
-        // SAFETY: plain FFI call with a one-element list.
-        unsafe { vmuc_hv::ffi::hv_vcpus_exit(&raw const id, 1) };
+        HvVcpu::force_exit(&[id]).expect("hv_vcpus_exit");
     });
     let seen = worker.join().expect("vCPU thread panicked")?;
     kicker.join().expect("kicker panicked");

@@ -99,16 +99,6 @@ impl HvVm {
         // SAFETY: the framework validates the range.
         error::check(unsafe { ffi::hv_vm_protect(ipa, size, perm.bits()) })
     }
-
-    /// Forces the listed vCPUs out of `hv_vcpu_run`. On Apple silicon the
-    /// list must be explicit; an empty list is a no-op, not "all vCPUs".
-    pub fn exit_vcpus(&self, vcpus: &[u64]) -> HvResult<()> {
-        if vcpus.is_empty() {
-            return Ok(());
-        }
-        // SAFETY: `vcpus` is a live slice; the framework does not retain it.
-        error::check(unsafe { ffi::hv_vcpus_exit(vcpus.as_ptr(), vcpus.len() as u32) })
-    }
 }
 
 impl Drop for HvVm {

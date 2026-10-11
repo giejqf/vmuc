@@ -38,10 +38,22 @@ impl HvVcpu {
     }
 
     /// The framework handle, shareable as a plain `u64` for
-    /// [`HvVm::exit_vcpus`](crate::HvVm::exit_vcpus).
+    /// [`HvVcpu::force_exit`].
     #[inline]
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// Forces the listed vCPUs out of `hv_vcpu_run` (or makes their next
+    /// run return at once). Callable from any thread; this is the stop and
+    /// pause path only, never an interrupt kick. An empty list is a no-op,
+    /// not "all vCPUs".
+    pub fn force_exit(ids: &[u64]) -> HvResult<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: `ids` is a live slice; the framework does not retain it.
+        error::check(unsafe { ffi::hv_vcpus_exit(ids.as_ptr(), ids.len() as u32) })
     }
 
     /// Runs the guest until the next exit.
