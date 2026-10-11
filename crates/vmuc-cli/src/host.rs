@@ -24,7 +24,7 @@ pub struct HostInfo {
 
 impl HostInfo {
     pub fn collect() -> Self {
-        let os_version = sysctl_string("kern.osproductversion");
+        let os_version = sysctl_text("kern.osproductversion");
         let hv_support = sysctl_u32("kern.hv_support").map(|v| v != 0);
         let mut reasons = Vec::new();
         if !vmuc_hv::NATIVE {
@@ -120,7 +120,7 @@ fn meets_minimum(version: &str, major: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn sysctl_string(name: &str) -> Option<String> {
+pub(crate) fn sysctl_text(name: &str) -> Option<String> {
     let cname = std::ffi::CString::new(name).ok()?;
     let mut len: libc::size_t = 0;
     // SAFETY: querying the length with a NULL buffer is the documented idiom.
@@ -176,7 +176,7 @@ fn sysctl_u32(name: &str) -> Option<u32> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn sysctl_string(_name: &str) -> Option<String> {
+pub(crate) fn sysctl_text(_name: &str) -> Option<String> {
     None
 }
 
