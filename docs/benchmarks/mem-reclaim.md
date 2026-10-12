@@ -22,3 +22,5 @@ moves by a batch from run to run.
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `page_reporting.page_reporting_order=5` | 1040 | 3100 | 100 | 6.8 | 497 | 50 / 2500 |
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `page_reporting.page_reporting_order=5` | 1037 | 3117 | 87 | 10.4 | 487 | 50 / 1000 |
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `-` | 1049 | 3130 | 100 | 9.4 | 494 | 50 / 250 |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | Lima 2.2.1 vz | `-` | 802 | 2749 | 0 | >20 | 2749 | - |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `-` | 1352 | 3372 | 77 | 10.4 | 467 | 50 / 1000 |

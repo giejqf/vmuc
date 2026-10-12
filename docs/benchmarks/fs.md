@@ -23,3 +23,8 @@ not installed on the benchmark Mac).
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | 54a2e68 | virtiofs | 3154 | 3555 | 1302 | 32 | 975 | 575 | 71.5 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | 54a2e68 | guest virtio-blk ext4 | 2657 | 11084 | 34 | 12 | 195 | 18 | 0.7 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | 54a2e68 | host APFS (cache warm) | 5723 | 21201 | 356 | 13 | 89 | 180 | 9.6 |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | Lima 2.2.1 vz | Lima vz virtiofs | 2728 | 4519 | 1076 | 234 | 957 | 434 | 72.3 |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | Lima 2.2.1 vz | Lima vz guest disk | 2365 | 11140 | 33 | 13 | 199 | 20 | 0.7 |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | efa2bb2 | virtiofs | 3171 | 3811 | 1286 | 29 | 1002 | 603 | 77.7 |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | efa2bb2 | guest virtio-blk ext4 | 2795 | 11512 | 35 | 13 | 168 | 18 | 0.7 |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | efa2bb2 | host APFS (cache warm) | 5372 | 21622 | 321 | 14 | 94 | 256 | 9.9 |
