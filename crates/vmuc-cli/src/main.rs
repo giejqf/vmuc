@@ -16,6 +16,7 @@ mod proxy;
 mod stat;
 mod state;
 mod terminal;
+mod tui;
 mod vmm;
 
 use std::path::PathBuf;
@@ -103,6 +104,8 @@ enum Command {
     /// Ask the guest to drop caches and compact so its free memory can be
     /// handed back now.
     Reclaim { name: String },
+    /// Watch and drive every instance in a terminal UI.
+    Tui,
     /// Open a shell in an instance, or run a command there.
     Shell {
         name: String,
@@ -319,6 +322,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Shell { name, command } => lifecycle::shell(&home, &name, &command)?,
         Command::Stat { name, watch, json } => stat::run(&home, &name, watch, json)?,
+        Command::Tui => tui::run(&home)?,
         Command::Sudoers { helper } => {
             let helper = helper.unwrap_or_else(assets::vmnet_helper);
             print!("{}", sudoers_text(&helper));

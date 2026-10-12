@@ -20,8 +20,17 @@ fn connect(dir: &Path) -> anyhow::Result<UnixStream> {
 
 /// Sends one request and returns the reply.
 pub fn request(dir: &Path, req: &ControlRequest) -> anyhow::Result<ControlResponse> {
+    request_within(dir, req, Duration::from_secs(30))
+}
+
+/// [`request`], giving up when no reply comes within `timeout`.
+pub fn request_within(
+    dir: &Path,
+    req: &ControlRequest,
+    timeout: Duration,
+) -> anyhow::Result<ControlResponse> {
     let mut s = connect(dir)?;
-    s.set_read_timeout(Some(Duration::from_secs(30)))?;
+    s.set_read_timeout(Some(timeout))?;
     write_line(&mut s, req)?;
     read_line(&mut s)?
         .ok_or_else(|| anyhow::anyhow!("the VMM closed the connection without a reply"))
