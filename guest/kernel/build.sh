@@ -6,11 +6,12 @@
 #   guest/kernel/build.sh            build (cached download, incremental)
 #   CLEAN=1 guest/kernel/build.sh    wipe guest/kernel/build and guest/kernel/out first
 #
-# Inputs:  guest/kernel/VERSION (version + tarball sha256), guest/kernel/vmuc.config
+# Inputs:  guest/kernel/VERSION (version + tarball sha256), guest/kernel/vmuc.config,
+#          guest/kernel/patches/*.patch
 # Outputs: guest/kernel/out/{Image,config,version.txt}
 #
 # Needs: aarch64-linux-gnu-gcc, make, flex, bison, bc, libssl-dev, libelf-dev,
-#        pahole (dwarves, for BTF), curl, tar, xz.
+#        pahole (dwarves, for BTF), curl, tar, xz, patch.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -46,12 +47,22 @@ else
     mv "$build_dir/$tarball.part" "$build_dir/$tarball"
 fi
 
-# 2. Extract once (stamp file marks a complete extraction).
-if [[ ! -f $src/.vmuc-extracted ]]; then
+# 2. Extract, then apply patches/*.patch in name order. The stamp names
+#    the tarball and the patches, so changing either re-extracts; the
+#    object tree goes too, since a reverted file keeps an older mtime
+#    than its object.
+patches=("$here"/patches/*.patch)
+[[ -e ${patches[0]} ]] || patches=()
+stamp=$( { echo "$sha256"; cat "${patches[@]}" /dev/null; } | sha256sum | cut -d' ' -f1)
+if [[ $(cat "$src/.vmuc-extracted" 2>/dev/null) != "$stamp" ]]; then
     log "extracting $tarball"
-    rm -rf "$src"
+    rm -rf "$src" "$obj"
     tar -C "$build_dir" -xf "$build_dir/$tarball"
-    touch "$src/.vmuc-extracted"
+    for p in "${patches[@]}"; do
+        log "applying $(basename "$p")"
+        patch -d "$src" -p1 --forward --quiet < "$p"
+    done
+    echo "$stamp" > "$src/.vmuc-extracted"
 fi
 
 # 3. Reproducibility: fixed user/host; the timestamp is the release's own

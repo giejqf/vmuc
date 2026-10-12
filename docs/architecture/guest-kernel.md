@@ -106,8 +106,9 @@ JOBS=8 guest/kernel/build.sh    # default is nproc
 ```
 
 `build.sh` downloads the tarball into `guest/kernel/build/` (skipped
-when present and the sha256 matches), extracts once, merges the
-fragment, verifies it, builds `arch/arm64/boot/Image` with
+when present and the sha256 matches), extracts it and applies
+`guest/kernel/patches/*.patch` (again only when the tarball or a patch
+changed, which also discards the object tree), merges the fragment, verifies it, builds `arch/arm64/boot/Image` with
 `ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-`, and copies `Image`,
 the final `.config` and a `version.txt` (version, `uname -r` release,
 tarball and Image sha256, size) into `guest/kernel/out/`. Builds are
@@ -130,6 +131,26 @@ which `.text` is 14.5 MiB, `.BTF` 4.8 MiB and `.rodata` 3.6 MiB.
 `build.sh` ends by running `initramfs/build.sh`, so one invocation
 leaves everything `qemu-boot-test.sh` needs in `out/`.
 
+On a Mac, a vmuc instance is a build box: arm64 Ubuntu's native
+compiler answers to `aarch64-linux-gnu-gcc`, so after `apt-get install
+build-essential flex bison bc libssl-dev libelf-dev dwarves` the same
+`build.sh` runs unchanged. With `--cpus 10` on an M4 Pro a full build
+takes about two minutes; `vmuc copy NAME:kernel/out/Image .` brings it
+out. Its sha256 differs from CI's (another toolchain build), so the
+kernel that ships is still CI's.
+
+## Patches
+
+vmuc's kernel is upstream plus as few patches as possible, each in
+`guest/kernel/patches/` with a header saying why and pointing at the
+measurement behind it. Patch files carry `GPL-2.0-only`, the license of
+what they change. A patch that stops applying on a version bump is
+rebased or dropped in the bump's change, with a `docs/logs/` entry.
+
+| Patch | Why |
+|---|---|
+| `0001-mm-page_reporting-report-the-whole-free-list-per-pass` | Upstream reports a sixteenth of each free list per two-second pass, so freed memory takes 7–10 s to reach the host; vmuc releases a range in microseconds, so each pass reports everything ([ADR 0002](../adr/0002-guest-kernel-reports-everything-per-pass.md)) |
+
 ## Testing
 
 ```
@@ -148,7 +169,8 @@ earlycon=pl011,0x9000000 panic=-1 vmuc.expect=net,blk,console,rng,balloon`
 and the initramfs from `initramfs/init.c`. (6.18 has no
 `page_reporting.page_reporting_delay_ms` parameter, only
 `page_reporting_order`; the reporting delay is a hard-coded 2 s, so
-the command line does not try to set one.)
+the command line does not try to set one. How much each pass reports is
+patched instead, see Patches.)
 
 That init is a static C program of a few hundred lines: it mounts proc,
 sysfs and devtmpfs, prints `uname -r`, walks
@@ -205,7 +227,8 @@ as the `vmuc-kernel-<version>-arm64` artifact.
    line 1 is the version.
 3. `make kernel-test`. If `build.sh` reports a fragment line that no
    longer applies (an option renamed or removed upstream), fix the
-   fragment in the same change and note it in the commit message.
+   fragment in the same change and note it in the commit message; a
+   patch that no longer applies is rebased the same way.
 4. On a series change (6.18 → 6.24), re-run `make savedefconfig` in
    `guest/kernel/build/obj` and scan it for new defconfig leftovers.
 5. Commit `VERSION`, the fragment if it changed, and the new

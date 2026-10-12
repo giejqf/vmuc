@@ -24,3 +24,9 @@ moves by a batch from run to run.
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `-` | 1049 | 3130 | 100 | 9.4 | 494 | 50 / 250 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | Lima 2.2.1 vz | `-` | 802 | 2749 | 0 | >20 | 2749 | - |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `-` | 1352 | 3372 | 77 | 10.4 | 467 | 50 / 1000 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 1af90d185cee)` | 689 | 2916 | 99 | 6.8 | 384 | 50 / 500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 1af90d185cee)` | 708 | 2734 | 99 | 8.3 | 394 | 50 / 1000 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 1af90d185cee)` | 732 | 2803 | 99 | 8.3 | 426 | 50 / 500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | 739 | 2774 | 99 | 2.1 | 370 | 25 / 500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | 757 | 2829 | 100 | 1.0 | 403 | 25 / 500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | 762 | 2799 | 99 | 0.5 | 375 | 25 / 500 |

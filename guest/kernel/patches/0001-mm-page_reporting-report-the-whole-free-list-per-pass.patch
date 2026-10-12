@@ -1,0 +1,41 @@
+SPDX-License-Identifier: GPL-2.0-only
+(A change to GPL-2.0 Linux source; the rest of vmuc is Apache-2.0.)
+
+Subject: [PATCH] mm/page_reporting: report the whole free list per pass
+
+Upstream reports at most a sixteenth of each free list per pass, one
+pass every two seconds, so a guest that frees 2 GiB on a 4 GiB VM gives
+90 % of it back to vmuc's host only after 7-10 s. vmuc releases a range
+in tens of microseconds (p99 0.25-2.5 ms), so the pacing protects
+nothing here; with the whole list per pass, the first pass (two seconds
+after the free) returns it all. The two-second delay that batches
+reports is unchanged.
+
+Evidence: docs/experiments/2026-10-13-reporting-pace.md and
+docs/adr/0002-guest-kernel-reports-everything-per-pass.md.
+
+--- a/mm/page_reporting.c
++++ b/mm/page_reporting.c
+@@ -169,16 +169,16 @@
+ 	 * device for this list. By doing this we avoid processing any
+ 	 * given list for too long.
+ 	 *
+-	 * The current value used allows us enough calls to process over a
+-	 * sixteenth of the current list plus one additional call to handle
+-	 * any pages that may have already been present from the previous
+-	 * list processed. This should result in us reporting all pages on
+-	 * an idle system in about 30 seconds.
++	 * vmuc: enough calls for the whole list plus one, so a pass reports
++	 * everything that is free when it runs. Upstream allows a sixteenth
++	 * per pass (about 30 seconds for an idle system), which leaves a
++	 * freed gigabyte with the guest for 10 seconds or more; vmuc's host
++	 * releases a range in tens of microseconds.
+ 	 *
+ 	 * The division here should be cheap since PAGE_REPORTING_CAPACITY
+ 	 * should always be a power of 2.
+ 	 */
+-	budget = DIV_ROUND_UP(area->nr_free, PAGE_REPORTING_CAPACITY * 16);
++	budget = DIV_ROUND_UP(area->nr_free, PAGE_REPORTING_CAPACITY);
+ 
+ 	/* loop through free list adding unreported pages to sg list */
+ 	list_for_each_entry_safe(page, next, list, lru) {

@@ -16,3 +16,7 @@ reclaimed yet.
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | busybox | 4 | 5s | 30s | 0.17 | 131 MB |
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | instance ubuntu | 4 | 60s | 30s | 0.33 | 867 MB |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | Lima 2.2.1 vz (VZ + hostagent) | 4 | 60s | 30s | 0.60 | 802 MiB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance memtest (kernel 1af90d185cee) | 4 | 60s | 30s | 0.27 | 888 MB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance memtest (kernel 1af90d185cee) | 4 | 60s | 30s | 0.23 | 889 MB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance memtest (kernel 090cd98c03a0) | 4 | 60s | 30s | 0.23 | 907 MB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance memtest (kernel 090cd98c03a0) | 4 | 60s | 30s | 0.27 | 901 MB |

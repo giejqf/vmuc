@@ -165,7 +165,11 @@ Components:
   `PAGE_POISONING=n`; the command line sets
   `page_reporting.page_reporting_order=5` (128 KiB) instead of the 2 MiB
   pageblock default: the bulk path is as fast and an idle guest hands
-  back ~220 MiB more (`docs/experiments/2026-10-11-reporting-order.md`).
+  back ~220 MiB more (`docs/experiments/2026-10-11-reporting-order.md`),
+  and `swiotlb=noforce` (no device bounces, so the 64 MiB buffer is
+  waste; `docs/experiments/2026-10-12-idle-footprint.md`). The kernel
+  reports its whole free list on every pass instead of a sixteenth
+  (ADR 0002), so freed memory is back in about 2 s instead of 7–10.
   Agent exposes `meminfo`, `psi`, `drop_caches`, `compact` RPCs.
 
 Invariants, also in AGENTS.md: only the unmap/refresh/remap sequence
@@ -245,7 +249,8 @@ vmuc _proxy NAME PORT hidden
 
 ### Guest kernel (`guest/kernel`)
 
-Linux LTS current at project start (6.12 or newer LTS), arm64 defconfig
+Linux LTS current at project start (6.12 or newer LTS), as few patches
+as possible (`guest/kernel/patches/`, each with its ADR), arm64 defconfig
 reduced then extended: virtio-mmio, virtio blk/net/console/vsock/fs/rng/
 balloon, page reporting, ext4/btrfs/xfs/erofs/overlayfs/fuse, netfilter
 and bridge built-in (for Docker templates), cgroup v2, PSI, no modules,
