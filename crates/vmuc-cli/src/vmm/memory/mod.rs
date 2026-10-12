@@ -3,14 +3,12 @@
 //! numbers, `reclaim_now`, and the host-pressure responder.
 //!
 //! Free page reporting runs all the time without any of this. The
-//! responder only reacts to macOS memory pressure: on *warn* it asks the
-//! guest to drop caches and compact (so freed memory can be reported),
-//! at most every 30 s; on *critical*, and only with
-//! `memoryPolicy.pressureBalloon: true` (off by default), it inflates the
-//! balloon by at most 25 % of the guest's available memory, never below
-//! `minAvailable`, at most every 60 s, and deflates after 120 s of calm.
-//! Those limits exist because looser policies collapsed idle guests and
-//! oscillated (feasibility.md).
+//! responder only reacts to macOS memory pressure, by the rules in
+//! [`policy`]; the balloon part is off unless the instance sets
+//! `memoryPolicy.pressureBalloon`. Its limits exist because looser
+//! policies collapsed idle guests and oscillated (feasibility.md).
+
+mod policy;
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
@@ -18,12 +16,10 @@ use std::time::{Duration, Instant};
 
 use vmuc_proto::{AgentRequest, AgentResponse, PressureLevel, Stat};
 
+use self::policy::{Action, Policy, Round};
 use super::{Shared, ready};
 
 const POLL: Duration = Duration::from_secs(5);
-const RECLAIM_EVERY: Duration = Duration::from_secs(30);
-const BALLOON_EVERY: Duration = Duration::from_secs(60);
-const CALM_BEFORE_DEFLATE: Duration = Duration::from_secs(120);
 
 /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warn, 4 critical.
 fn host_pressure() -> PressureLevel {
@@ -144,14 +140,6 @@ pub fn reclaim_now(shared: &Shared) -> Result<(), String> {
     Ok(())
 }
 
-/// The balloon size the pressure rule asks for, given what the guest has
-/// available: at most a quarter of it, never leaving less than `floor`.
-pub fn pressure_target(current: u64, available: u64, floor: u64) -> u64 {
-    let step = available / 4;
-    let room = available.saturating_sub(floor);
-    current + step.min(room)
-}
-
 pub fn spawn_responder(shared: Arc<Shared>) {
     let _ = std::thread::Builder::new()
         .name("pressure".into())
@@ -159,68 +147,54 @@ pub fn spawn_responder(shared: Arc<Shared>) {
 }
 
 fn respond(shared: &Shared) {
-    let mut last_balloon: Option<Instant> = None;
-    let mut calm_since = Instant::now();
+    let mut policy = Policy::new(
+        shared.pressure_balloon,
+        shared.min_available,
+        Instant::now(),
+    );
     while !shared.machine.stopping() {
         std::thread::sleep(POLL);
         let now = Instant::now();
-        let level = pressure(shared, now);
-        if level == PressureLevel::Normal {
-            let deflate = shared.balloon.actual() > 0
-                && now.duration_since(calm_since) >= CALM_BEFORE_DEFLATE;
-            if deflate {
-                tracing::info!(
-                    "host pressure calm for {CALM_BEFORE_DEFLATE:?}; deflating the balloon"
-                );
-                shared.balloon.set_target(0);
-            }
-            continue;
-        }
-        calm_since = now;
-        let recent = shared
-            .last_reclaim
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some_and(|t| now.duration_since(t) < RECLAIM_EVERY);
-        if !recent {
-            tracing::info!(
-                ?level,
-                "host memory pressure; asking the guest to drop caches"
-            );
-            if let Err(e) = reclaim_now(shared) {
-                tracing::warn!("reclaim on pressure: {e}");
-            }
-        }
-        let may_balloon = shared.pressure_balloon
-            && level == PressureLevel::Critical
-            && last_balloon.is_none_or(|t| now.duration_since(t) >= BALLOON_EVERY);
-        if may_balloon && let Some((_, s)) = shared.balloon.stats() {
-            let target =
-                pressure_target(shared.balloon.actual(), s.available, shared.min_available);
-            if target > shared.balloon.actual() {
-                tracing::info!(target, "critical host pressure; inflating the balloon");
-                shared.balloon.set_target(target);
-                last_balloon = Some(now);
+        let balloon = shared.balloon.actual();
+        let round = Round {
+            now,
+            level: pressure(shared, now),
+            last_reclaim: *shared
+                .last_reclaim
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            balloon,
+            available: shared.balloon.stats().map(|(_, s)| s.available),
+            stall: (balloon > 0).then(|| guest_stall(shared)).flatten(),
+        };
+        for action in policy.step(&round) {
+            match action {
+                Action::Reclaim => {
+                    tracing::info!(level = ?round.level, "host memory pressure; asking the guest to drop caches");
+                    if let Err(e) = reclaim_now(shared) {
+                        tracing::warn!("reclaim on pressure: {e}");
+                    }
+                }
+                Action::Balloon(target, why) => {
+                    tracing::info!(target, ?why, balloon, "balloon target");
+                    shared.balloon.set_target(target);
+                }
             }
         }
+    }
+}
+
+/// The guest's memory PSI `some` over the last 10 s, percent.
+fn guest_stall(shared: &Shared) -> Option<f32> {
+    match ready::agent_call(&shared.vsock, &AgentRequest::Psi, Duration::from_secs(2)) {
+        Ok(AgentResponse::Psi(p)) => Some(p.some_avg10),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pressure_target_respects_quarter_and_floor() {
-        const GIB: u64 = 1 << 30;
-        // 4 GiB available, floor 256 MiB: a quarter, 1 GiB.
-        assert_eq!(pressure_target(0, 4 * GIB, GIB / 4), GIB);
-        // Close to the floor: only down to it.
-        assert_eq!(pressure_target(GIB, GIB / 2, GIB / 4), GIB + GIB / 8);
-        // At or below the floor: nothing more.
-        assert_eq!(pressure_target(GIB, GIB / 4, GIB / 4), GIB);
-        assert_eq!(pressure_target(0, 0, GIB / 4), 0);
-    }
 
     #[test]
     fn a_simulated_level_holds_until_it_expires() {
