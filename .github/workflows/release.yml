@@ -1,0 +1,155 @@
+name: release
+
+# A tag vX.Y.Z builds every release asset, checks it, and only then opens
+# a draft release with all of them attached, so a release never points
+# at assets that do not exist yet. Publishing the draft and copying the
+# rendered formula into the tap stay manual.
+#
+#   kernel  (Linux)  cross-build, QEMU boot test     -> vmuc-kernel-X.Y.Z-arm64.img
+#   agent   (Linux)  static musl build                -> vmuc-agent-X.Y.Z-aarch64-linux-musl
+#   macos   (hosted) clippy, unit tests, build, sign, `vmuc info` against the assets
+#   e2e     (self-hosted Apple silicon, when vars.VMUC_HV_RUNNER is 'true')
+#   release (Linux)  source tarball, formula, SHA256SUMS, draft release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read kernel VERSION
+        id: ver
+        run: echo "sha256=$(sed -n 2p guest/kernel/VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-dev-arm64-cross \
+            build-essential flex bison bc libssl-dev libelf-dev dwarves \
+            cpio xz-utils qemu-system-arm
+      - name: Cache kernel tarball
+        uses: actions/cache@v4
+        with:
+          path: guest/kernel/build/linux-*.tar.xz
+          key: linux-tarball-${{ steps.ver.outputs.sha256 }}
+      - run: guest/kernel/build.sh
+      - run: guest/kernel/initramfs/build.sh
+      - run: guest/kernel/qemu-boot-test.sh
+      - run: cp guest/kernel/out/Image "vmuc-kernel-${GITHUB_REF_NAME#v}-arm64.img"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel
+          path: vmuc-kernel-*-arm64.img
+          if-no-files-found: error
+
+  agent:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-unknown-linux-musl
+      - run: cargo build --locked --release -p vmuc-agent --target aarch64-unknown-linux-musl
+      - run: |
+          cp target/aarch64-unknown-linux-musl/release/vmuc-agent \
+            "vmuc-agent-${GITHUB_REF_NAME#v}-aarch64-linux-musl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent
+          path: vmuc-agent-*-aarch64-linux-musl
+          if-no-files-found: error
+
+  macos:
+    needs: [kernel, agent]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the workspace version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "$want" = "$have" || { echo "tag $want, Cargo.toml $have"; exit 1; }
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal -c clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo build --locked --release -p vmuc-cli -p vmuc-net
+      - name: Ad-hoc sign with the hypervisor entitlement
+        run: |
+          codesign --force --sign - --entitlements vmuc.entitlements target/release/vmuc
+          codesign -d --entitlements - target/release/vmuc 2>&1 | grep -q com.apple.security.hypervisor
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: The install is complete with the release assets
+        run: |
+          chmod +x assets/vmuc-agent-*
+          export VMUC_KERNEL=$(ls assets/vmuc-kernel-*.img) VMUC_AGENT=$(ls assets/vmuc-agent-*)
+          target/release/vmuc info
+          target/release/vmuc info | grep -q "ready:       yes"
+
+  e2e:
+    needs: [kernel, agent]
+    if: vars.VMUC_HV_RUNNER == 'true'
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Put the assets where the tests look
+        run: |
+          mkdir -p guest/kernel/out target/aarch64-unknown-linux-musl/release
+          cp assets/vmuc-kernel-*.img guest/kernel/out/Image
+          install -m 0755 assets/vmuc-agent-* target/aarch64-unknown-linux-musl/release/vmuc-agent
+          guest/kernel/initramfs/busybox.sh
+      - run: make e2e
+
+  release:
+    needs: [macos, e2e]
+    # e2e is skipped without a self-hosted runner; a failure still stops here.
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Source tarball (what the formula downloads)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "assets/vmuc-${GITHUB_REF_NAME#v}.tar.gz" \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+      - name: Formula and checksums
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          packaging/homebrew/render.sh "$v" "assets/vmuc-$v.tar.gz" \
+            "assets/vmuc-kernel-$v-arm64.img" "assets/vmuc-agent-$v-aarch64-linux-musl" \
+            > assets/vmuc.rb
+          ruby -c assets/vmuc.rb
+          (cd assets && sha256sum vmuc-kernel-* vmuc-agent-* vmuc.rb > SHA256SUMS)
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "vmuc ${GITHUB_REF_NAME#v}" --generate-notes \
+            assets/vmuc-kernel-* assets/vmuc-agent-* assets/vmuc.rb assets/SHA256SUMS

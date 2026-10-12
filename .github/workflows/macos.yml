@@ -2,8 +2,8 @@ name: macos
 
 # GitHub-hosted Apple silicon runners cannot use Hypervisor.framework
 # (no nested virtualization), so this job builds, unit-tests, signs and
-# runs `vmuc info`. End-to-end tests run on a self-hosted runner (see
-# e2e.yml, added in M2).
+# runs `vmuc info`. End-to-end tests need a self-hosted Apple silicon
+# runner (`make e2e`; release.yml runs them when one is configured).
 
 on:
   push:
