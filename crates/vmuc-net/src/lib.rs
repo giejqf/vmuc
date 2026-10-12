@@ -5,5 +5,6 @@
 
 pub mod helper;
 pub mod launch;
+pub mod region;
 #[cfg(target_os = "macos")]
 pub mod vmnet;
