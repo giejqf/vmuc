@@ -71,7 +71,9 @@ calls `hv_*`.
 - On Linux: `make check` (fmt, clippy `-D warnings`, tests,
   `cargo check --target aarch64-apple-darwin --workspace`), `make kernel`
   (cross-build and QEMU boot test), `make agent`.
-- On the Mac via `make mac-test` / `make mac-e2e` / `make bench NAME=`.
+- On the Mac via `make mac-test` / `make mac-e2e` / `make bench NAME=`
+  from the Linux box, or `make e2e` / `make bench-local NAME=` on the Mac
+  itself.
 - `vmuc-hv` must compile on Linux as stubs so clippy covers every call
   site. Device models take `&mut [u8]` guest memory and a queue, never a
   VM handle, so they are unit-tested on Linux.
@@ -101,10 +103,18 @@ calls `hv_*`.
   thread. Create each vCPU **once** and reuse it across PSCI CPU_OFF /
   CPU_ON; recreating deadlocks on `hv_vcpu_create`'s global lock.
 - Exit handling PC rules: data abort (MMIO) → the VMM advances PC by 4;
-  HVC/SMC → HV advances PC, do not touch it; unknown system register
-  trap → read-as-zero / write-ignored and PC += 4 (Linux writes
-  `OSDLR_EL1` early and hangs otherwise); refuse data aborts with ISV=0
-  and skip the instruction.
+  HVC → HV has already advanced PC, do not touch it; SMC → HV has *not*
+  (the preferred return address is the SMC itself): the VMM advances PC
+  by 4 after handling it; unknown system register trap → read-as-zero /
+  write-ignored and PC += 4 (Linux writes `OSDLR_EL1` early and hangs
+  otherwise); refuse data aborts with ISV=0 and skip the instruction.
+  Measured, not assumed: `crates/vmuc-hv/tests/contract.rs`
+  (docs/experiments/2026-10-11-hv-contract-m4-pro.md); rerun it after
+  every macOS update.
+- The GIC redistributor region is sized for the framework's maximum
+  vCPUs (32 MiB for 64 on an M4 Pro), not the ones created; it lives at
+  `0x0C00_0000`, clear of the MMIO devices. With the in-kernel GIC, WFI
+  idles inside `hv_vcpu_run`: no WFI exit handling on the hot path.
 - Interrupts go through Apple's in-kernel GICv3 (`hv_gic_*`). Asserting
   an SPI with `hv_gic_set_spi` **is** the whole wake; never follow it
   with `hv_vcpus_exit`. `hv_vcpus_exit` is for stop and pause only.
@@ -112,6 +122,11 @@ calls `hv_*`.
 - Teardown order is a contract: join vCPU threads → join every worker
   that holds a guest-memory reference → destroy the GIC →
   `hv_vm_destroy` → unmap guest RAM. Violating it is a SIGSEGV.
+- So a worker that teardown joins never makes a host call that can block
+  indefinitely: a file under `~/Desktop` waits for a privacy (TCC)
+  prompt, an iCloud file for its download, a FIFO for a writer. Such
+  calls go to threads that hold no guest memory and are not joined
+  (virtio-fs runs requests on a pool for this reason).
 - `hv_vm_map` does not allow overlapping remaps of a *different* host
   range into a live IPA range. Unmap/map of a sub-range is fine only
   when the **same** host address comes back.
@@ -160,7 +175,14 @@ calls `hv_*`.
 - Platform pitfalls: `mode_t` is `u16` on macOS; xattr parameter order
   differs from Linux; `fallocate` is absent (use `F_PREALLOCATE` /
   `F_PUNCHHOLE`); unix socket paths are limited to 104 bytes, so keep
-  `~/.vmuc/<name>/` short and reject names that would overflow.
+  `~/.vmuc/<name>/` short and reject names that would overflow;
+  `O_NOFOLLOW | O_NOFOLLOW_ANY` together is EINVAL.
+- Unix datagram sockets on macOS hold 4 KiB and cap a datagram at 2 KiB
+  by default (size both ends explicitly), and a send into a full one
+  fails with ENOBUFS instead of waiting. A blocked `recv` never learns
+  that the peer closed; the ECONNRESET the peer leaves goes to whichever
+  call looks first, so detect a vanished peer with a receive timeout plus
+  `getpeername` (ENOTCONN).
 
 ## Testing
 
@@ -225,6 +247,15 @@ calls `hv_*`.
   ad-hoc signed binary claiming it is killed on launch. vmnet access
   lives only in `vmuc-vmnet-helper`, which runs as root via sudoers,
   relays frames, and does nothing else.
+- The helper must exit with its VMM. A stale vmenet interface left on
+  the shared bridge also strips TSO from every other VM's host traffic
+  (a bridge offers only the offloads all its members have). From macOS
+  15.4 vmnet reads and writes `virtio_net_hdr` itself
+  (`vmnet_enable_virtio_header_key`, looked up at run time), which is
+  what makes TSO through the helper possible.
+- A helper change only takes effect once the user reinstalls the
+  root-owned copy (`vmuc sudoers` prints the command); batch helper
+  changes and say so.
 - GitHub-hosted macOS runners cannot run HV. End-to-end CI runs on a
   self-hosted Apple silicon runner; unit tests and builds run on
   `macos-15` and `macos-26`.

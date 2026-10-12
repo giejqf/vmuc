@@ -46,7 +46,7 @@ pub enum ExceptionClass {
     WaitForInterrupt,
     /// `HVC #imm16`. The framework has already advanced PC.
     HypercallHvc(u16),
-    /// `SMC #imm16`. The framework has already advanced PC.
+    /// `SMC #imm16`. The framework has *not* advanced PC: the VMM must.
     SmcCall(u16),
     /// Trapped MSR/MRS. The VMM must advance PC by 4 after handling.
     SystemRegister {
