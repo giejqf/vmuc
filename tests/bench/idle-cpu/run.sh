@@ -11,12 +11,14 @@
 # instance, 5 for busybox), samples the process's CPU time over SAMPLE
 # seconds (default 30), records footprint, stops the VM, and appends a
 # dated row to docs/benchmarks/idle-cpu.md. Target: < 0.5 % of one core
-# with 4 vCPUs.
+# with 4 vCPUs. VMUC_KERNEL boots another kernel.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 mode=${1:?usage: run.sh busybox|instance NAME [CPUS]}
-kernel=$root/guest/kernel/out/Image
+kernel=${VMUC_KERNEL:-$root/guest/kernel/out/Image}
+# Another kernel is named in the row by its sha256 prefix.
+kernel_label=${VMUC_KERNEL:+ (kernel $(shasum -a 256 "$VMUC_KERNEL" | cut -c1-12))}
 (cd "$root" && cargo build -q --release -p vmuc-cli)
 vmuc=$root/target/release/vmuc
 codesign --force --sign - --entitlements "$root/vmuc.entitlements" "$vmuc" 2>/dev/null
@@ -53,6 +55,6 @@ kill "$pid" 2>/dev/null || true
 rm -f "$log"
 
 pct=$(python3 -I -c "print(f'{($t1 - $t0) / $sample * 100:.2f}')")
-row="| $(date +%F) | $(sysctl -n machdep.cpu.brand_string), macOS $(sw_vers -productVersion) | $what | $cpus | ${settle}s | ${sample}s | $pct | $fp |"
+row="| $(date +%F) | $(sysctl -n machdep.cpu.brand_string), macOS $(sw_vers -productVersion) | $what$kernel_label | $cpus | ${settle}s | ${sample}s | $pct | $fp |"
 echo "$row" >> "$root/docs/benchmarks/idle-cpu.md"
 echo "$row"

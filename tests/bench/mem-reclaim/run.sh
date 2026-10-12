@@ -7,6 +7,7 @@
 #
 #   tests/bench/mem-reclaim/run.sh NAME            (instance must exist)
 #   VMUC_KERNEL_CMDLINE='page_reporting.page_reporting_order=5' ...
+#   VMUC_KERNEL=path/to/Image ...    (the row names its sha256 prefix)
 #
 # Appends a dated row to docs/benchmarks/mem-reclaim.md. Targets: >= 90 %
 # of freed memory back within 10 s; idle footprint < 350 MiB.
@@ -20,9 +21,10 @@ vmuc=$root/target/release/vmuc
 codesign --force --sign - --entitlements "$root/vmuc.entitlements" "$vmuc" 2>/dev/null
 "$vmuc" stop "$name" >/dev/null 2>&1 || true
 
-python3 -I - "$vmuc" "$name" "$root" "${VMUC_KERNEL_CMDLINE:-}" <<'PY'
+python3 -I - "$vmuc" "$name" "$root" "${VMUC_KERNEL_CMDLINE:-}${VMUC_KERNEL:+ (kernel $(shasum -a 256 "$VMUC_KERNEL" | cut -c1-12))}" <<'PY'
 import datetime, json, subprocess, sys, time
 vmuc, name, root, extra = sys.argv[1:]
+extra = extra.strip()
 MIB = 1 << 20
 def stat():
     return json.loads(subprocess.run([vmuc, "stat", name, "--json"], check=True,
