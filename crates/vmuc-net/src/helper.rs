@@ -174,7 +174,10 @@ mod relay {
             }
             for p in &pkts[..count as usize] {
                 // SAFETY: vmnet filled `vm_pkt_size` bytes of the buffer.
-                unsafe { libc::send(t.fd, (*p.vm_pkt_iov).iov_base, p.vm_pkt_size, 0) };
+                let frame = unsafe {
+                    std::slice::from_raw_parts((*p.vm_pkt_iov).iov_base.cast::<u8>(), p.vm_pkt_size)
+                };
+                send_frame(t.fd, frame);
             }
         }
     }
@@ -307,28 +310,93 @@ mod relay {
         Ok(())
     }
 
-    /// Frames from the VMM to vmnet, on this thread, until the socket
-    /// closes: wait for one datagram, take whatever else is already
-    /// queued (up to `batch`), hand them to vmnet in one call.
+    /// How long one wait for the VMM's next frame lasts. A datagram socket
+    /// gives a blocked recv no end-of-file when the VMM goes away, but a
+    /// recv started after that fails at once, so the helper notices within
+    /// this time and exits, taking its vmnet interface with it.
+    const RECV_WAIT: libc::timeval = libc::timeval {
+        tv_sec: 1,
+        tv_usec: 0,
+    };
+
+    /// What one wait on the VMM's socket brought.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum Batch {
+        /// This many frames are in the buffers.
+        Frames(usize),
+        /// Nothing within the receive timeout.
+        Idle,
+        /// The VMM is gone.
+        Closed,
+    }
+
+    /// Waits (up to the socket's receive timeout) for one datagram, then
+    /// takes whatever else is already queued, up to `bufs.len()`.
+    pub(super) fn recv_batch(fd: i32, bufs: &mut [Vec<u8>], lens: &mut [usize]) -> Batch {
+        let mut count = 0;
+        while count < bufs.len() {
+            let flags = if count == 0 { 0 } else { libc::MSG_DONTWAIT };
+            let b = &mut bufs[count];
+            // SAFETY: receiving into our own buffer of its length.
+            let n = unsafe { libc::recv(fd, b.as_mut_ptr().cast(), b.len(), flags) };
+            if n > 0 {
+                lens[count] = n as usize;
+                count += 1;
+                continue;
+            }
+            if count > 0 {
+                break;
+            }
+            let err = std::io::Error::last_os_error().raw_os_error();
+            return match (n, err) {
+                (0, _) => Batch::Closed,
+                (_, Some(libc::EAGAIN | libc::EINTR)) => Batch::Idle,
+                _ => Batch::Closed,
+            };
+        }
+        Batch::Frames(count)
+    }
+
+    /// Sends one frame to the VMM. A datagram send into a full socket
+    /// fails with ENOBUFS instead of waiting, so wait here (about 20 ms at
+    /// most) rather than drop the frame and make TCP retransmit it.
+    pub(super) fn send_frame(fd: i32, frame: &[u8]) {
+        for _ in 0..1000 {
+            // SAFETY: sending from a valid slice.
+            if unsafe { libc::send(fd, frame.as_ptr().cast(), frame.len(), 0) } >= 0 {
+                return;
+            }
+            match std::io::Error::last_os_error().raw_os_error() {
+                Some(libc::ENOBUFS | libc::EAGAIN | libc::EINTR) => {
+                    std::thread::sleep(std::time::Duration::from_micros(20));
+                }
+                _ => return,
+            }
+        }
+    }
+
+    /// Frames from the VMM to vmnet, on this thread, until the VMM goes:
+    /// each batch is handed to vmnet in one call.
     fn relay_to_vmnet(fd: i32, iface: interface_ref, size: usize, batch: usize) {
         let mut bufs: Vec<Vec<u8>> = (0..batch).map(|_| vec![0u8; size]).collect();
         let mut lens = vec![0usize; batch];
+        let wait = RECV_WAIT;
+        // SAFETY: a valid socket and a timeval option value.
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                (&raw const wait).cast(),
+                size_of::<libc::timeval>() as libc::socklen_t,
+            );
+        }
         loop {
-            let mut count = 0;
-            while count < batch {
-                let flags = if count == 0 { 0 } else { libc::MSG_DONTWAIT };
-                let b = &mut bufs[count];
-                // SAFETY: receiving into our own buffer of `size` bytes.
-                let n = unsafe { libc::recv(fd, b.as_mut_ptr().cast(), b.len(), flags) };
-                if n <= 0 {
-                    break;
-                }
-                lens[count] = n as usize;
-                count += 1;
-            }
-            if count == 0 {
-                return; // closed, or an error other than "nothing more"
-            }
+            let count = match recv_batch(fd, &mut bufs, &mut lens) {
+                Batch::Frames(n) => n,
+                Batch::Idle => continue,
+                Batch::Closed => return,
+            };
             let mut iovs: Vec<libc::iovec> = bufs[..count]
                 .iter_mut()
                 .zip(&lens)
@@ -356,6 +424,47 @@ mod relay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_relay_batches_waits_out_full_sockets_and_notices_the_vmm_go() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixDatagram;
+        use std::time::{Duration, Instant};
+
+        use relay::{Batch, recv_batch, send_frame};
+
+        let (helper, vmm) = UnixDatagram::pair().unwrap();
+        helper
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let fd = helper.as_raw_fd();
+        let mut bufs = vec![vec![0u8; 2048]; 4];
+        let mut lens = vec![0; 4];
+        for f in [&b"one"[..], b"two", b"three"] {
+            vmm.send(f).unwrap();
+        }
+        assert_eq!(recv_batch(fd, &mut bufs, &mut lens), Batch::Frames(3));
+        assert_eq!(&bufs[2][..lens[2]], b"three");
+        assert_eq!(recv_batch(fd, &mut bufs, &mut lens), Batch::Idle);
+
+        // A full socket: the frame waits until the VMM reads.
+        while vmm.send(&[0u8; 1024]).is_ok() {}
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            let mut b = [0u8; 2048];
+            while helper.recv(&mut b).is_ok_and(|n| n != 3) {}
+            helper
+        });
+        let t = Instant::now();
+        send_frame(vmm.as_raw_fd(), b"end");
+        let helper = reader.join().unwrap();
+        assert!(t.elapsed() < Duration::from_secs(1));
+
+        drop(vmm);
+        let fd = helper.as_raw_fd();
+        assert_eq!(recv_batch(fd, &mut bufs, &mut lens), Batch::Closed);
+    }
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| (*s).to_owned()).collect()
