@@ -6,5 +6,6 @@
 pub mod helper;
 pub mod launch;
 pub mod region;
+pub mod ring;
 #[cfg(target_os = "macos")]
 pub mod vmnet;
