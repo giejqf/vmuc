@@ -62,6 +62,38 @@ pub fn write_ssh_config(
 }
 
 pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<()> {
+    let (inst, mut child, started) = spawn_vmm(home, name, false)?;
+    eprintln!(
+        "starting {name} (log: {})",
+        inst.dir.join(files::VMM_LOG).display()
+    );
+    wait_ready(&inst, &mut child, started, timeout)
+}
+
+/// `start --foreground`: the VMM stays attached to this terminal (its log
+/// goes there) until the guest powers off; Ctrl-C reaches it as well and
+/// powers the guest off, and this process reports how it ended.
+pub fn start_foreground(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<()> {
+    let (inst, mut child, started) = spawn_vmm(home, name, true)?;
+    // Ctrl-C is for the VMM (same process group); stay to report.
+    // SAFETY: ignoring SIGINT in this process only; the child already runs.
+    unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    eprintln!("starting {name} in the foreground; Ctrl-C powers it off");
+    wait_ready(&inst, &mut child, started, timeout)?;
+    let status = child.wait()?;
+    if status.success() {
+        eprintln!("{name} stopped");
+        Ok(())
+    } else {
+        bail!("the VMM exited with {status}")
+    }
+}
+
+fn spawn_vmm(
+    home: &VmucHome,
+    name: &str,
+    foreground: bool,
+) -> anyhow::Result<(Instance, std::process::Child, Instant)> {
     let inst = Instance::open(home, name)?;
     if let Some(pid) = state::running_pid(&inst.dir) {
         bail!("{name} is already running (pid {pid})");
@@ -71,30 +103,37 @@ pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<(
     write_ssh_config(home, &inst, &resolved.user.name, resolved.ssh.forward_agent)?;
     let _ = fs::remove_file(inst.dir.join(files::EVENTS));
 
-    let log = File::create(inst.dir.join(files::VMM_LOG))?;
     let mut cmd = Command::new(std::env::current_exe()?);
     cmd.args(["_vmm", name])
         .current_dir(&inst.dir)
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    // SAFETY: setsid is async-signal-safe; it detaches the VMM from our
-    // session so closing the terminal does not take the VM down.
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+        .stdin(Stdio::null());
+    if !foreground {
+        let log = File::create(inst.dir.join(files::VMM_LOG))?;
+        cmd.stdout(log.try_clone()?).stderr(log);
+        // SAFETY: setsid is async-signal-safe; it detaches the VMM from our
+        // session so closing the terminal does not take the VM down.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     let started = Instant::now();
-    let mut child = cmd.spawn().context("spawning the VMM")?;
-    eprintln!(
-        "starting {name} (log: {})",
-        inst.dir.join(files::VMM_LOG).display()
-    );
+    let child = cmd.spawn().context("spawning the VMM")?;
+    Ok((inst, child, started))
+}
 
+/// Follows the VMM's events until the guest is ready.
+fn wait_ready(
+    inst: &Instance,
+    child: &mut std::process::Child,
+    started: Instant,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let name = &inst.name;
     let mut shown = 0;
     loop {
         let events = state::read_events(&inst.dir);
@@ -121,17 +160,14 @@ pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<(
                     bail!("{name} is degraded: {}", errors.join("; "))
                 }
                 EventKind::Exiting { reason } => {
-                    bail!("{name} stopped while starting: {reason}{}", log_tail(&inst))
+                    bail!("{name} stopped while starting: {reason}{}", log_tail(inst))
                 }
                 _ => {}
             }
         }
         shown = events.len();
         if let Some(status) = child.try_wait()? {
-            bail!(
-                "the VMM exited ({status}) while starting{}",
-                log_tail(&inst)
-            );
+            bail!("the VMM exited ({status}) while starting{}", log_tail(inst));
         }
         if started.elapsed() > timeout {
             bail!(
@@ -188,22 +224,78 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Replaces this process with `ssh` into the instance.
-pub fn shell(home: &VmucHome, name: &str, command: &[String]) -> anyhow::Result<()> {
+/// Replaces this process with `ssh` into the instance, starting in
+/// `workdir` (a guest path) or, by default, wherever the current host
+/// directory appears in the guest through a share.
+pub fn shell(
+    home: &VmucHome,
+    name: &str,
+    workdir: Option<&str>,
+    command: &[String],
+) -> anyhow::Result<()> {
     let inst = Instance::open(home, name)?;
     if state::running_pid(&inst.dir).is_none() {
         bail!("{name} is not running; `vmuc start {name}` first");
     }
+    let mapped = match workdir {
+        Some(_) => None,
+        None => std::env::current_dir()
+            .ok()
+            .and_then(|cwd| guest_path(&inst.resolved(home).ok()?.mounts, &cwd)),
+    };
     let mut cmd = Command::new("ssh");
     cmd.arg("-F").arg(inst.dir.join(files::SSH_CONFIG));
-    if !command.is_empty() && atty_stdin() {
+    let remote = remote_command(workdir, mapped.as_deref(), command);
+    if remote.is_some() && atty_stdin() {
         cmd.arg("-t");
     }
     cmd.arg(ssh_host(name));
-    if !command.is_empty() {
-        cmd.arg("--").args(command);
+    if let Some(remote) = remote {
+        cmd.arg("--").arg(remote);
     }
     Err(anyhow::anyhow!("exec ssh: {}", cmd.exec()))
+}
+
+/// The remote command line, if any: `cd` into the directory first (an
+/// explicit one must exist; the mapped default is best effort), then the
+/// command or a login shell.
+fn remote_command(
+    workdir: Option<&str>,
+    mapped: Option<&str>,
+    command: &[String],
+) -> Option<String> {
+    let cd = match (workdir, mapped) {
+        (Some(d), _) => Some(format!("cd {} && ", shell_quote(d))),
+        (None, Some(d)) => Some(format!("cd {} 2>/dev/null; ", shell_quote(d))),
+        (None, None) => None,
+    };
+    match (cd, command.is_empty()) {
+        (None, true) => None,
+        (None, false) => Some(command.join(" ")),
+        (Some(cd), true) => Some(format!("{cd}exec \"$SHELL\" -l")),
+        (Some(cd), false) => Some(format!("{cd}{}", command.join(" "))),
+    }
+}
+
+/// Where host directory `dir` is in the guest, through the share with the
+/// longest matching location.
+fn guest_path(
+    mounts: &[vmuc_config::defaults::ResolvedMount],
+    dir: &std::path::Path,
+) -> Option<String> {
+    mounts
+        .iter()
+        .filter_map(|m| {
+            let rest = dir.strip_prefix(&m.location).ok()?;
+            let depth = m.location.components().count();
+            Some((depth, std::path::Path::new(&m.mount_point).join(rest)))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, p)| p.display().to_string())
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn atty_stdin() -> bool {
@@ -214,6 +306,44 @@ fn atty_stdin() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_current_directory_maps_through_the_deepest_share() {
+        use std::path::Path;
+        let m = |location: &str, mount_point: &str| vmuc_config::defaults::ResolvedMount {
+            location: location.into(),
+            mount_point: mount_point.into(),
+            writable: false,
+        };
+        let mounts = [m("/Users/me", "/Users/me"), m("/Users/me/src", "/src")];
+        assert_eq!(
+            guest_path(&mounts, Path::new("/Users/me/docs")).as_deref(),
+            Some("/Users/me/docs")
+        );
+        assert_eq!(
+            guest_path(&mounts, Path::new("/Users/me/src/vmuc")).as_deref(),
+            Some("/src/vmuc")
+        );
+        assert_eq!(guest_path(&mounts, Path::new("/opt")), None);
+    }
+
+    #[test]
+    fn remote_commands_cd_first() {
+        let cmd = |c: &[&str]| c.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(remote_command(None, None, &[]), None);
+        assert_eq!(
+            remote_command(None, None, &cmd(&["uname", "-a"])).as_deref(),
+            Some("uname -a")
+        );
+        assert_eq!(
+            remote_command(Some("/w d"), None, &[]).as_deref(),
+            Some("cd '/w d' && exec \"$SHELL\" -l")
+        );
+        assert_eq!(
+            remote_command(None, Some("/src/it's"), &cmd(&["make"])).as_deref(),
+            Some("cd '/src/it'\\''s' 2>/dev/null; make")
+        );
+    }
 
     #[test]
     fn ssh_config_points_at_our_proxy_and_key() {

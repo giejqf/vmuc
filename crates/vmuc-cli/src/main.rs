@@ -77,6 +77,10 @@ enum Command {
         /// Seconds to wait for the guest to become ready.
         #[arg(long, default_value_t = 600)]
         timeout: u64,
+        /// Stay attached: the VMM logs to this terminal and Ctrl-C powers
+        /// the guest off.
+        #[arg(long)]
+        foreground: bool,
     },
     /// Power an instance off (asks the guest; `--force` pulls the plug).
     Stop {
@@ -113,6 +117,10 @@ enum Command {
     /// Open a shell in an instance, or run a command there.
     Shell {
         name: String,
+        /// Guest directory to start in. Default: the current directory when
+        /// a share makes it visible in the guest, else the home directory.
+        #[arg(long)]
+        workdir: Option<String>,
         /// Command to run instead of a login shell.
         #[arg(last = true)]
         command: Vec<String>,
@@ -128,7 +136,12 @@ enum Command {
     },
     /// Delete an instance and its disk.
     #[command(alias = "rm")]
-    Delete { name: String },
+    Delete {
+        name: String,
+        /// Stop it first (`stop --force`) if it is running.
+        #[arg(long, short)]
+        force: bool,
+    },
     /// List shipped and user templates.
     Template {
         #[command(subcommand)]
@@ -283,9 +296,14 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Delete { name } => {
+        Command::Delete { name, force } => {
             if state::running_pid(&home.instance_dir(&name)?).is_some() {
-                anyhow::bail!("{name} is running; `vmuc stop {name}` first");
+                if !force {
+                    anyhow::bail!(
+                        "{name} is running; `vmuc stop {name}` or `vmuc delete --force {name}`"
+                    );
+                }
+                lifecycle::stop(&home, &name, true)?;
             }
             instance::delete(&home, &name)?;
             println!("deleted {name}");
@@ -325,15 +343,28 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Start { name, timeout } => {
-            lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
+        Command::Start {
+            name,
+            timeout,
+            foreground,
+        } => {
+            let timeout = std::time::Duration::from_secs(timeout);
+            if foreground {
+                lifecycle::start_foreground(&home, &name, timeout)?;
+            } else {
+                lifecycle::start(&home, &name, timeout)?;
+            }
         }
         Command::Stop { name, force } => lifecycle::stop(&home, &name, force)?,
         Command::Restart { name, timeout } => {
             lifecycle::stop(&home, &name, false)?;
             lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
         }
-        Command::Shell { name, command } => lifecycle::shell(&home, &name, &command)?,
+        Command::Shell {
+            name,
+            workdir,
+            command,
+        } => lifecycle::shell(&home, &name, workdir.as_deref(), &command)?,
         Command::Stat { name, watch, json } => stat::run(&home, &name, watch, json)?,
         Command::Tui => tui::run(&home)?,
         Command::Sudoers { helper } => {
