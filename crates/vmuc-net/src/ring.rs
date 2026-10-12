@@ -21,8 +21,13 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::region::Region;
 
-/// Control page bytes; data starts after it.
-const CONTROL: usize = 4096;
+/// Version of this layout. The helper's hello names the one it speaks and
+/// the VMM uses rings only when they match: a helper is installed
+/// separately and can lag behind. Bump it with any change below.
+pub const LAYOUT: u32 = 2;
+/// Control page bytes; data starts after it. A 16 KiB page, so the region
+/// is whole pages on Apple silicon.
+const CONTROL: usize = 16 << 10;
 /// Data bytes per ring.
 pub const DATA: usize = 4 << 20;
 /// One ring in the region.

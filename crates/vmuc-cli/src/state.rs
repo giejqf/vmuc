@@ -77,7 +77,7 @@ pub fn now_ms() -> u64 {
 }
 
 /// Appends events, one JSON object per line.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EventLog {
     path: PathBuf,
 }

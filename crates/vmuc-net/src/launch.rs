@@ -195,7 +195,7 @@ fn launch_with(cmd: &mut Command, mode: &Mode) -> Result<Launched, LaunchError> 
         }
     };
     ours.set_read_timeout(None)?;
-    let region = if hello.rings {
+    let region = if hello.ring_layout == crate::ring::LAYOUT {
         offer_rings(&ours)
     } else {
         None

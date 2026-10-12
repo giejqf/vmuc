@@ -215,7 +215,7 @@ fn boot_and_wait(
     b.add_virtio(Box::new(Rng::new()?))?;
     let (balloon, reclaim) = b.add_balloon()?;
     // Last, so disks keep their names: the NIC, when the helper starts.
-    let _helper = network::attach(&mut b, &resolved, &events);
+    network::attach(&mut b, &resolved, &events);
     // After the NIC, so its slot does not depend on the mounts.
     shares::attach(&mut b, fs_shares)?;
     // Mapped, not read: a heap copy would stay billed for the VM's life.

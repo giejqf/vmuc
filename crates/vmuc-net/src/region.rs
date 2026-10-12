@@ -71,14 +71,15 @@ impl Region {
         Err(io::Error::from_raw_os_error(libc::EEXIST))
     }
 
-    /// Maps a region received as `fd`, which must be exactly `len` bytes:
-    /// the other side chose the size, so it is checked, not trusted.
+    /// Maps `len` bytes of a region received as `fd`. The other side chose
+    /// the object's size, so it is checked, not trusted: at least `len`
+    /// (macOS rounds a shared memory object up to whole 16 KiB pages).
     pub fn from_fd(fd: &OwnedFd, len: usize) -> io::Result<Self> {
         // SAFETY: a zeroed stat is a valid out-buffer.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: valid descriptor and out-buffer.
         check(unsafe { libc::fstat(fd.as_raw_fd(), &raw mut st) })?;
-        if u64::try_from(st.st_size).ok() != Some(len as u64) {
+        if u64::try_from(st.st_size).map_or(true, |size| size < len as u64) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("shared region is {} bytes, expected {len}", st.st_size),
@@ -163,6 +164,17 @@ mod tests {
             a.base().add(100).write_volatile(42);
             assert_eq!(b.base().add(100).read_volatile(), 42);
         }
-        assert!(Region::from_fd(&fd, 1 << 17).is_err());
+        assert!(
+            Region::from_fd(&fd, 1 << 17).is_err(),
+            "smaller than asked for"
+        );
+    }
+
+    #[test]
+    fn sizes_that_are_not_whole_pages_round_trip() {
+        for len in [crate::ring::REGION_BYTES, 100_000, 4096 * 3] {
+            let (_a, fd) = Region::create(len).unwrap();
+            assert_eq!(Region::from_fd(&fd, len).unwrap().len(), len, "{len}");
+        }
     }
 }

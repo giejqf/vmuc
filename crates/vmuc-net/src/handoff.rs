@@ -8,8 +8,9 @@
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-/// Payload of the datagram that carries the region's fd.
-pub const REGION_MARKER: &[u8] = b"vmuc-rings-v1";
+/// Payload of the datagram that carries the region's fd (it names the
+/// ring layout, `ring::LAYOUT`).
+pub const REGION_MARKER: &[u8] = b"vmuc-rings-2";
 /// A kick: "look at the rings".
 static KICK: [u8; 1] = *b"k";
 
@@ -113,6 +114,15 @@ mod tests {
 
     use super::*;
     use crate::region::Region;
+
+    #[test]
+    fn the_marker_names_the_ring_layout() {
+        let marker = std::str::from_utf8(REGION_MARKER).unwrap();
+        assert!(
+            marker.ends_with(&format!("-{}", crate::ring::LAYOUT)),
+            "{marker}"
+        );
+    }
 
     #[test]
     fn the_region_crosses_and_frames_and_kicks_are_told_apart() {

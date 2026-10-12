@@ -52,7 +52,7 @@ unsafe extern "C" fn on_start(ctx: *mut c_void, status: vmnet_return_t, params: 
                 end: dict_string(params, vmnet_end_address_key),
                 mask: dict_string(params, vmnet_subnet_mask_key),
                 virtio_header: s.virtio_header,
-                rings: true,
+                ring_layout: crate::ring::LAYOUT,
             }
         });
         // SAFETY: as above. Zero (unknown) means one packet per call.
