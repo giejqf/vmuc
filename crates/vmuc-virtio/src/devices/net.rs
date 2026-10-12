@@ -242,8 +242,6 @@ impl Loop {
             return;
         };
         let mem = ctx.mem.clone();
-        let mergeable = ctx.features & F_MRG_RXBUF != 0;
-        let ring = usize::from(ctx.queues[RX].size);
         let mut used_any = false;
         loop {
             // A buffer first: a frame taken off the socket cannot go back.
@@ -265,51 +263,24 @@ impl Loop {
                 }
                 break;
             };
-            // Spread the frame over as many chains as it needs.
-            let mut room = Segments::writable(&first).len();
-            let mut chains = vec![first];
-            while room < total as u64 && mergeable {
-                let next = self
-                    .rx_spare
-                    .pop_front()
-                    .or_else(|| ctx.queues[RX].pop(&mem).ok().flatten());
-                let Some(next) = next else { break };
-                room += Segments::writable(&next).len();
-                chains.push(next);
-            }
-            if room < total as u64 {
-                let never = !mergeable || chains.len() >= ring;
-                for c in chains.into_iter().rev() {
-                    self.rx_spare.push_front(c);
+            match deliver(
+                &mut ctx,
+                &mut self.rx_spare,
+                first,
+                &mut self.frame[..total],
+            ) {
+                Delivery::Done => {}
+                Delivery::Dropped => continue,
+                Delivery::Wait => {
+                    // Hold the frame until the guest posts more buffers:
+                    // the socket fills meanwhile and the helper waits,
+                    // rather than TCP retransmitting a dropped segment.
+                    self.rx_pending = Some(total);
+                    if ctx.queues[RX].enable_notification(&mem).unwrap_or(false) {
+                        continue;
+                    }
+                    break;
                 }
-                if never {
-                    // More than the guest's buffers could ever hold.
-                    tracing::debug!(
-                        len = total,
-                        "virtio-net: frame dropped, larger than the ring"
-                    );
-                    continue;
-                }
-                // Hold the frame until the guest posts more buffers: the
-                // socket fills meanwhile and the helper waits, rather than
-                // TCP retransmitting a dropped 64 KiB segment.
-                self.rx_pending = Some(total);
-                if ctx.queues[RX].enable_notification(&mem).unwrap_or(false) {
-                    continue;
-                }
-                break;
-            }
-            let count = chains.len() as u16;
-            self.frame[10..12].copy_from_slice(&count.to_le_bytes());
-            let mut at = 0;
-            for c in &chains {
-                let out = Segments::writable(c);
-                let take = (out.len() as usize).min(total - at);
-                let wrote = out
-                    .write_from(&mem, &self.frame[at..at + take])
-                    .unwrap_or(0);
-                at += wrote;
-                let _ = ctx.queues[RX].add_used(&mem, c.head, wrote as u32);
             }
             used_any = true;
         }
@@ -321,6 +292,65 @@ impl Loop {
         }
         self.ctx = Some(ctx);
     }
+}
+
+/// What became of a frame offered to the guest.
+#[derive(Debug, PartialEq, Eq)]
+enum Delivery {
+    Done,
+    /// Not enough buffers posted yet: try again when the guest adds some.
+    Wait,
+    /// More than the guest's buffers could ever hold.
+    Dropped,
+}
+
+/// Spreads `frame` (virtio-net header first) over the guest's receive
+/// buffers: `first`, then as many more as it needs (mergeable buffers).
+/// On `Wait` and `Dropped` the buffers go back to `spare`, in order.
+fn deliver(
+    ctx: &mut WorkerCtx,
+    spare: &mut VecDeque<DescChain>,
+    first: DescChain,
+    frame: &mut [u8],
+) -> Delivery {
+    let mem = ctx.mem.clone();
+    let mergeable = ctx.features & F_MRG_RXBUF != 0;
+    let total = frame.len();
+    let mut room = Segments::writable(&first).len();
+    let mut chains = vec![first];
+    while room < total as u64 && mergeable {
+        let next = spare
+            .pop_front()
+            .or_else(|| ctx.queues[RX].pop(&mem).ok().flatten());
+        let Some(next) = next else { break };
+        room += Segments::writable(&next).len();
+        chains.push(next);
+    }
+    if room < total as u64 {
+        let never = !mergeable || chains.len() >= usize::from(ctx.queues[RX].size);
+        for c in chains.into_iter().rev() {
+            spare.push_front(c);
+        }
+        if never {
+            tracing::debug!(
+                len = total,
+                "virtio-net: frame dropped, larger than the ring"
+            );
+            return Delivery::Dropped;
+        }
+        return Delivery::Wait;
+    }
+    let count = chains.len() as u16;
+    frame[10..12].copy_from_slice(&count.to_le_bytes());
+    let mut at = 0;
+    for c in &chains {
+        let out = Segments::writable(c);
+        let take = (out.len() as usize).min(total - at);
+        let wrote = out.write_from(&mem, &frame[at..at + take]).unwrap_or(0);
+        at += wrote;
+        let _ = ctx.queues[RX].add_used(&mem, c.head, wrote as u32);
+    }
+    Delivery::Done
 }
 
 pub struct Net {
