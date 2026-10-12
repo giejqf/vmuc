@@ -41,6 +41,23 @@ enum Format {
     Json,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Level {
+    Normal,
+    Warn,
+    Critical,
+}
+
+impl From<Level> for vmuc_proto::PressureLevel {
+    fn from(l: Level) -> Self {
+        match l {
+            Level::Normal => Self::Normal,
+            Level::Warn => Self::Warn,
+            Level::Critical => Self::Critical,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Show versions, host capabilities and paths.
@@ -217,6 +234,16 @@ enum Command {
     /// Print the boot parameters for an instance as JSON.
     #[command(name = "_bootinfo", hide = true)]
     BootInfo { name: String },
+    /// Make a running instance's memory manager act as if macOS reported
+    /// this pressure level (experiments): `vmuc _pressure dev critical`.
+    #[command(name = "_pressure", hide = true)]
+    Pressure {
+        name: String,
+        level: Level,
+        /// Seconds before the host's own level applies again.
+        #[arg(long = "for", default_value_t = 600)]
+        seconds: u32,
+    },
     /// Call one agent method: `vmuc _agent tcp:127.0.0.1:17700 mem_info`.
     #[command(name = "_agent", hide = true)]
     Agent {
@@ -408,6 +435,21 @@ fn main() -> anyhow::Result<()> {
                 vmuc_proto::ControlResponse::Ok => {
                     eprintln!("asked {name} to drop caches and compact");
                 }
+                other => anyhow::bail!("{other:?}"),
+            }
+        }
+        Command::Pressure {
+            name,
+            level,
+            seconds,
+        } => {
+            let dir = home.instance_dir(&name)?;
+            let req = vmuc_proto::ControlRequest::SimulatePressure {
+                level: level.into(),
+                seconds,
+            };
+            match control::request(&dir, &req)? {
+                vmuc_proto::ControlResponse::Ok => {}
                 other => anyhow::bail!("{other:?}"),
             }
         }

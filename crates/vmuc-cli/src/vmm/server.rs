@@ -8,6 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use vmuc_config::paths::instance as files;
 use vmuc_proto::jsonl::{read_line, write_line};
@@ -48,6 +49,10 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
             Ok(()) => ControlResponse::Ok,
             Err(message) => ControlResponse::Error { message },
         },
+        ControlRequest::SimulatePressure { level, seconds } => {
+            super::memory::simulate(shared, level, Duration::from_secs(seconds.into()));
+            ControlResponse::Ok
+        }
         ControlRequest::BalloonTarget { bytes } => {
             shared.balloon.set_target(bytes);
             ControlResponse::Ok

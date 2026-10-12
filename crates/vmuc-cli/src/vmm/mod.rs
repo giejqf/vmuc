@@ -58,6 +58,8 @@ pub struct Shared {
     balloon: BalloonHandle,
     reclaim: Arc<ReclaimStats>,
     last_reclaim: Mutex<Option<Instant>>,
+    /// A pressure level to act on instead of the host's, until the instant.
+    simulated: Mutex<Option<(vmuc_proto::PressureLevel, Instant)>>,
     pressure_balloon: bool,
     min_available: u64,
     forwards: Mutex<Vec<Forward>>,
@@ -241,6 +243,7 @@ fn boot_and_wait(
         balloon,
         reclaim,
         last_reclaim: Mutex::new(None),
+        simulated: Mutex::new(None),
         pressure_balloon: resolved.memory_policy.pressure_balloon,
         min_available: resolved.memory_policy.min_available.bytes(),
         forwards: Mutex::new(Vec::new()),

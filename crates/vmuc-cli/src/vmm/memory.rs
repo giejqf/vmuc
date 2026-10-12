@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
-use vmuc_proto::{AgentRequest, AgentResponse, Stat};
+use vmuc_proto::{AgentRequest, AgentResponse, PressureLevel, Stat};
 
 use super::{Shared, ready};
 
@@ -26,19 +26,42 @@ const BALLOON_EVERY: Duration = Duration::from_secs(60);
 const CALM_BEFORE_DEFLATE: Duration = Duration::from_secs(120);
 
 /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warn, 4 critical.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Pressure {
-    Normal,
-    Warn,
-    Critical,
+fn host_pressure() -> PressureLevel {
+    match crate::host::sysctl_u32("kern.memorystatus_vm_pressure_level") {
+        Some(4) => PressureLevel::Critical,
+        Some(2) => PressureLevel::Warn,
+        _ => PressureLevel::Normal,
+    }
 }
 
-fn host_pressure() -> Pressure {
-    match crate::host::sysctl_u32("kern.memorystatus_vm_pressure_level") {
-        Some(4) => Pressure::Critical,
-        Some(2) => Pressure::Warn,
-        _ => Pressure::Normal,
+/// The level the responder acts on: a simulated one while it lasts, else
+/// the host's.
+fn pressure(shared: &Shared, now: Instant) -> PressureLevel {
+    let simulated = *shared
+        .simulated
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    effective(simulated, now, host_pressure)
+}
+
+fn effective(
+    simulated: Option<(PressureLevel, Instant)>,
+    now: Instant,
+    host: impl FnOnce() -> PressureLevel,
+) -> PressureLevel {
+    match simulated {
+        Some((level, until)) if now < until => level,
+        _ => host(),
     }
+}
+
+/// Acts as if the host reported `level` for `span` (`vmuc _pressure`).
+pub fn simulate(shared: &Shared, level: PressureLevel, span: Duration) {
+    tracing::info!(?level, ?span, "simulated host pressure");
+    *shared
+        .simulated
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some((level, Instant::now() + span));
 }
 
 /// This process's `phys_footprint`: what macOS bills the VM for. (0 on
@@ -140,9 +163,9 @@ fn respond(shared: &Shared) {
     let mut calm_since = Instant::now();
     while !shared.machine.stopping() {
         std::thread::sleep(POLL);
-        let level = host_pressure();
         let now = Instant::now();
-        if level == Pressure::Normal {
+        let level = pressure(shared, now);
+        if level == PressureLevel::Normal {
             let deflate = shared.balloon.actual() > 0
                 && now.duration_since(calm_since) >= CALM_BEFORE_DEFLATE;
             if deflate {
@@ -169,7 +192,7 @@ fn respond(shared: &Shared) {
             }
         }
         let may_balloon = shared.pressure_balloon
-            && level == Pressure::Critical
+            && level == PressureLevel::Critical
             && last_balloon.is_none_or(|t| now.duration_since(t) >= BALLOON_EVERY);
         if may_balloon && let Some((_, s)) = shared.balloon.stats() {
             let target =
@@ -197,6 +220,20 @@ mod tests {
         // At or below the floor: nothing more.
         assert_eq!(pressure_target(GIB, GIB / 4, GIB / 4), GIB);
         assert_eq!(pressure_target(0, 0, GIB / 4), 0);
+    }
+
+    #[test]
+    fn a_simulated_level_holds_until_it_expires() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(10);
+        let sim = Some((PressureLevel::Critical, later));
+        let host = || PressureLevel::Warn;
+        assert_eq!(effective(sim, t0, host), PressureLevel::Critical);
+        assert_eq!(effective(sim, later, host), PressureLevel::Warn);
+        assert_eq!(effective(None, t0, host), PressureLevel::Warn);
+        // Simulating `normal` hides real pressure while it lasts.
+        let calm = Some((PressureLevel::Normal, later));
+        assert_eq!(effective(calm, t0, host), PressureLevel::Normal);
     }
 
     #[cfg(target_os = "macos")]

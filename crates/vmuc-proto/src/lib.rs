@@ -174,12 +174,28 @@ pub enum ControlRequest {
     },
     /// Ask the guest to drop caches and compact so reporting can drain.
     ReclaimNow,
+    /// Act as if macOS reported `level` for the next `seconds`, instead of
+    /// reading the host's level (experiments; `Normal` for 0 s clears it).
+    SimulatePressure {
+        level: PressureLevel,
+        seconds: u32,
+    },
     /// Open a vsock stream to the guest on `port`. After `Ok` the
     /// connection carries raw bytes (used by `vmuc _proxy` and the port
     /// forwarder, which then speak the agent's `Tunnel` protocol).
     VsockConnect {
         port: u32,
     },
+}
+
+/// macOS memory pressure, as `kern.memorystatus_vm_pressure_level` reports
+/// it (1, 2, 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PressureLevel {
+    Normal,
+    Warn,
+    Critical,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
