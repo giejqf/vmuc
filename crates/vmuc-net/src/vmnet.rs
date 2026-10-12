@@ -41,6 +41,9 @@ unsafe extern "C" {
     pub static vmnet_start_address_key: *const c_char;
     pub static vmnet_end_address_key: *const c_char;
     pub static vmnet_subnet_mask_key: *const c_char;
+    pub static vmnet_enable_tso_key: *const c_char;
+    pub static vmnet_read_max_packets_key: *const c_char;
+    pub static vmnet_write_max_packets_key: *const c_char;
 
     pub fn vmnet_start_interface(
         desc: xpc_object_t,
@@ -68,6 +71,20 @@ unsafe extern "C" {
         queue: dispatch_queue_t,
         handler: *const c_void,
     ) -> vmnet_return_t;
+}
+
+/// `vmnet_enable_virtio_header_key`, from macOS 15.4: looked up at run
+/// time so the helper still loads on 15.0-15.3, where it is absent.
+pub fn virtio_header_key() -> Option<*const c_char> {
+    // SAFETY: dlsym with a NUL-terminated name; a non-null result is the
+    // address of the framework's `const char * const` key.
+    unsafe {
+        let p = libc::dlsym(
+            libc::RTLD_DEFAULT,
+            c"vmnet_enable_virtio_header_key".as_ptr(),
+        );
+        (!p.is_null()).then(|| *p.cast::<*const c_char>())
+    }
 }
 
 unsafe extern "C" {

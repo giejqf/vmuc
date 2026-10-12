@@ -127,7 +127,8 @@ pub fn launch(helper: &Path, mode: &Mode) -> Result<Launched, LaunchError> {
 
 fn launch_with(cmd: &mut Command, mode: &Mode) -> Result<Launched, LaunchError> {
     let (ours, theirs) = UnixDatagram::pair()?;
-    ours.set_buffers(SOCKET_BUFFER)?;
+    // The helper's end must be sized here, before it is handed over (and
+    // so an installed helper needs no update); the NIC sizes its own.
     theirs.set_buffers(SOCKET_BUFFER)?;
     let mut child = cmd
         .args(mode.to_args())
