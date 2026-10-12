@@ -350,11 +350,23 @@ mod relay {
             let err = std::io::Error::last_os_error().raw_os_error();
             return match (n, err) {
                 (0, _) => Batch::Closed,
-                (_, Some(libc::EAGAIN | libc::EINTR)) => Batch::Idle,
+                (_, Some(libc::EAGAIN | libc::EINTR)) if peer_connected(fd) => Batch::Idle,
                 _ => Batch::Closed,
             };
         }
         Batch::Frames(count)
+    }
+
+    /// The VMM's end is still there. The ECONNRESET a vanished peer leaves
+    /// is reported to whichever call comes first, often a send from the
+    /// vmnet thread, after which recv only times out; getpeername keeps
+    /// saying ENOTCONN.
+    fn peer_connected(fd: i32) -> bool {
+        // SAFETY: zeroed sockaddr storage and its length are valid out-params.
+        let mut addr: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+        let mut len = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        // SAFETY: valid fd and out-params.
+        unsafe { libc::getpeername(fd, (&raw mut addr).cast(), &raw mut len) == 0 }
     }
 
     /// Sends one frame to the VMM. A datagram send into a full socket
@@ -461,8 +473,11 @@ mod tests {
         let helper = reader.join().unwrap();
         assert!(t.elapsed() < Duration::from_secs(1));
 
+        // The VMM goes while the vmnet thread is sending: the send takes
+        // the ECONNRESET, and the waiting side must still notice.
         drop(vmm);
         let fd = helper.as_raw_fd();
+        send_frame(fd, b"late");
         assert_eq!(recv_batch(fd, &mut bufs, &mut lens), Batch::Closed);
     }
 

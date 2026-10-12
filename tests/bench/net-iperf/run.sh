@@ -36,10 +36,11 @@ ip=$("$vmuc" shell netb -- 'ip -4 -o addr show eth0' </dev/null | awk '{print $4
 tso=$("$vmuc" shell netb -- 'ethtool -k eth0' </dev/null | awk '/^tcp-segmentation-offload:/ {print $2}')
 
 python3 -I - "$root" "$ip" "$tso" "$(git -C "$root" rev-parse --short HEAD)" <<'PY'
-import datetime, json, subprocess, sys
+import datetime, json, subprocess, sys, time
 root, ip, tso, rev = sys.argv[1:]
 rates = []
 for args in ([], ["-R"], ["-P", "4"], ["-R", "-P", "4"]):
+    time.sleep(1)  # iperf3 -s takes one client at a time
     out = subprocess.run(["iperf3", "-c", ip, "-t", "8", "-J", *args],
                          check=True, capture_output=True, text=True).stdout
     rates.append(json.loads(out)["end"]["sum_received"]["bits_per_second"] / 1e9)

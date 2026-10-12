@@ -133,6 +133,7 @@ shell("sudo apt-get -qq update >/dev/null 2>&1; "
 ip = shell("ip -4 -o addr show lima0").split()[3].split("/")[0]
 rates = []
 for args in ([], ["-R"], ["-P", "4"], ["-R", "-P", "4"]):
+    time.sleep(1)  # iperf3 -s takes one client at a time
     out = json.loads(run("iperf3", "-c", ip, "-t", "8", "-J", *args))
     rates.append(out["end"]["sum_received"]["bits_per_second"] / 1e9)
 append("net-iperf.md", f"| {today} | {host} | {what} | VZ NAT | " + " | ".join(f"{r:.1f}" for r in rates) + " |")
