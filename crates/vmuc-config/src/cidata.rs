@@ -276,8 +276,12 @@ fn render_user_data(
 fn render_network_config(resolved: &ResolvedConfig) -> String {
     // Matching by MAC works with every cloud-init renderer (netplan on
     // Ubuntu, ifupdown on Alpine); matching by driver only works with netplan.
+    // `optional`: boot does not wait for the DHCP lease (systemd orders
+    // cloud-init, and so ssh, after network-online); ssh, the agent and
+    // shares ride vsock, and boot.sh waits for the network itself before
+    // running provisioning scripts.
     format!(
-        "version: 2\nethernets:\n  eth0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: true\n    dhcp-identifier: mac\n",
+        "version: 2\nethernets:\n  eth0:\n    match:\n      macaddress: \"{}\"\n    dhcp4: true\n    dhcp-identifier: mac\n    optional: true\n",
         resolved.network.mac_address
     )
 }
@@ -522,6 +526,7 @@ timezone: Europe/Berlin
             r.network.mac_address.as_str()
         );
         assert_eq!(parsed["ethernets"]["eth0"]["dhcp4"], true);
+        assert_eq!(parsed["ethernets"]["eth0"]["optional"], true);
     }
 
     #[test]
