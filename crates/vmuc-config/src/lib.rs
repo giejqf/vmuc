@@ -14,6 +14,7 @@ mod assign;
 pub mod cidata;
 pub mod defaults;
 pub mod paths;
+pub mod reference;
 pub mod schema;
 pub mod template;
 

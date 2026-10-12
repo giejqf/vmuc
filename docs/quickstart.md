@@ -98,7 +98,10 @@ says so.
 
 ## Configuration
 
-`guest/templates/reference.yaml` (or `vmuc create template:reference`)
-lists every key with its default and explains how the built-in
-defaults, `~/.vmuc/_config/default.yaml`, the instance's `vmuc.yaml` and
-`~/.vmuc/_config/override.yaml` layer.
+`docs/config.md` lists every key with its default (generated from the
+schema; `guest/templates/reference.yaml` is the same as commented YAML,
+and `vmuc create template:reference` makes an instance from it). Change
+an instance with `vmuc edit NAME`, or at creation with `vmuc create
+--set path=value`. Settings layer: built-in defaults <
+`~/.vmuc/_config/default.yaml` < the instance's `vmuc.yaml` <
+`~/.vmuc/_config/override.yaml`.

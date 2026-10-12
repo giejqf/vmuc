@@ -1,6 +1,7 @@
-# vmuc instance configuration reference.
+# vmuc instance configuration reference (generated from the schema by
+# crates/vmuc-config/src/reference.rs; edit that, not this file).
 #
-# Every field is listed with its built-in default. `null` (or an omitted
+# Every key is listed with its built-in default. `null` (or an omitted
 # key) means "unset", which lets the layering fill it in:
 #
 #   built-in default  <  ~/.vmuc/_config/default.yaml  <  the instance's
@@ -23,20 +24,20 @@
 # BASIC CONFIGURATION
 # ----------------------------------------------------------------------
 
-# Templates to flatten into this one at `vmuc create` time. Each entry is
-# `template:NAME` (searched in $VMUC_TEMPLATES_PATH, ~/.vmuc/_templates,
-# the installed templates, then the built-in ones) or a file path
-# relative to this file. The child wins for scalars and maps; `provision`
-# and `probes` run base-first; other lists are child-first; mounts merge
-# by location; a non-empty child `images` replaces the base's. Earlier
-# entries win over later ones. Nesting is limited to 8 levels.
-# Built-in default: [] (and `default.yaml` uses the Ubuntu image + ~ mount)
+# Templates to flatten into this one at `vmuc create` time. Each entry
+# is `template:NAME` (searched in $VMUC_TEMPLATES_PATH,
+# ~/.vmuc/_templates, the installed templates, then the built-in ones)
+# or a file path relative to this file. The child wins for scalars and
+# maps; `provision` and `probes` run base-first; other lists are
+# child-first; mounts merge by location; a non-empty child `images`
+# replaces the base's. Earlier entries win over later ones. Nesting is
+# limited to 8 levels.
+# Built-in default: [] (and `default.yaml` uses the Ubuntu image and the
+# ~ mount)
 base: null
 
-# Rootfs candidates, tried in order: the first one that downloads and
-# verifies is used. `location` is an https:// URL or a local path;
-# `arch` is always "aarch64"; `digest` is "sha256:..." or "sha512:..."
-# and is strongly recommended. `kernel` overrides the kernel vmuc ships.
+# Root filesystem candidates, tried in order: the first one that
+# downloads and verifies is used.
 # Built-in default: [] (an instance cannot start without an image)
 images: null
 # - location: "https://cloud-images.ubuntu.com/.../ubuntu-24.04-server-cloudimg-arm64.img"
@@ -54,89 +55,83 @@ cpus: null
 # Guest RAM ceiling. The host pays only for pages the guest touches and
 # gets back what the guest frees (free page reporting is always on).
 # Binary units: "8GiB", "8G", "8192MiB", "8192M". Minimum 64MiB.
-# Built-in default: min("8GiB", half of the host RAM)
+# Built-in default: min("8GiB", half of the host's RAM)
 memory: null
 
-# Virtual disk size; a sparse raw file that grows on demand. Minimum 1GiB.
+# Virtual disk size: a sparse raw file that grows on demand. Minimum
+# 1GiB.
 # Built-in default: "100GiB"
 disk: null
 
-# Host directories shared into the guest over virtiofs.
-# Built-in default: the host home ("~") read-only at the same path.
+# Host directories shared into the guest over virtiofs. macOS asks once
+# before the guest may read Desktop, Documents or Downloads.
+# Built-in default: the host home ("~") read-only at the same path
 mounts: null
-# - location: "~"             # host path; "~" expands to the host home
-#   # Guest path.
-#   # Built-in default: the expanded host path (mirrored)
-#   mountPoint: null
-#   # Built-in default: false
-#   writable: null
+# - location: "~/src"
+#   mountPoint: "/src"
+#   writable: true
 
 # ----------------------------------------------------------------------
 # ADVANCED CONFIGURATION
 # ----------------------------------------------------------------------
 
+# How `vmuc shell` and plain ssh reach the guest (always through vsock).
 ssh:
-  # Also authorize ~/.ssh/*.pub in addition to ~/.vmuc/_config/user.pub.
+  # Also authorize ~/.ssh/*.pub besides ~/.vmuc/_config/user.pub.
   # Built-in default: false
   loadDotSSHPubKeys: null
   # Forward the host ssh agent into `vmuc shell`.
   # Built-in default: false
   forwardAgent: null
 
+# Guest networking through macOS vmnet, via the root helper `vmuc
+# sudoers` installs; without it the instance boots without a NIC (ssh,
+# shares and port forwards still work over vsock).
 network:
-  # "shared" is vmuc's own user-space NAT. "bridged" is reserved and not
-  # implemented in v0.1 (it would need `interface`).
+  # "shared": NAT behind the host, the guest gets a 192.168.x address
+  # the host can reach. "bridged": the guest joins the network of
+  # `interface`.
   # Built-in default: "shared"
   mode: null
-  # Host interface for bridged mode.
+  # Host interface for bridged mode (e.g. "en0"); required there.
   # Built-in default: none
   interface: null
+  # The NIC's MAC address.
   # Built-in default: a stable address derived from the instance name
   macAddress: null
 
-# Port forwarding rules, matched first to last; the override, instance
-# and default lists are concatenated in that order and a catch-all rule
-# (every guest listener on 0.0.0.0 -> same port on 127.0.0.1) ends the
-# list. Guest listeners are discovered by the agent; `static: true`
-# forwards even when nothing listens; `ignore: true` blocks a match.
+# Guest TCP listeners appear on the host, matched against these rules
+# first to last; the override, instance and default lists are
+# concatenated in that order and a catch-all rule (every guest listener
+# on 0.0.0.0 or 127.0.0.1, ports 1024 and up except 22, to the same port
+# on 127.0.0.1) ends the list. Forwarding rides vsock and needs no NIC.
 # Built-in default: [] (plus the catch-all rule)
 portForwards: null
-# - guestIp: 127.0.0.1         # Built-in default: 127.0.0.1 (also matches 0.0.0.0)
-#   guestPort: 8080            # exclusive with guestPortRange
-#   guestPortRange: [1, 65535] # Built-in default: [1, 65535]
-#   hostIp: 127.0.0.1          # Built-in default: 127.0.0.1
-#   hostPort: 8080             # exclusive with hostPortRange
-#   hostPortRange: [1, 65535]  # Built-in default: same as the guest range
-#   proto: tcp                 # tcp | udp | any. Built-in default: any
-#   ignore: false
-#   static: false
+# - guestPort: 8080
+#   hostPort: 18080
 
-# Provisioning. Scripts run on every boot from the cidata ISO after the
-# agent is up, in list order: `mode: boot` first (cloud-init bootcmd,
-# before networking), then `data` files are written, then `system`
-# scripts as root, then `user` scripts as the instance user. Scripts see
-# VMUC_* variables (VMUC_USER, VMUC_UID, VMUC_HOME, VMUC_BOOT_ID,
-# VMUC_PARAM_<KEY>, ...). Make scripts idempotent.
+# Scripts run on every boot from the seed after the agent is up, in list
+# order: `boot` first (cloud-init bootcmd, early), then `data` files are
+# written, then the network is waited for (when there is a NIC), then
+# `system` scripts run as root and `user` scripts as the instance user.
+# Scripts see VMUC_* variables (VMUC_USER, VMUC_UID, VMUC_HOME,
+# VMUC_BOOT_ID, VMUC_PARAM_<KEY>, ...). Make them idempotent.
 # Built-in default: []
 provision: null
-# - mode: system               # system | user | boot | data. Built-in default: system
+# - mode: system
 #   script: |
 #     #!/bin/sh
 #     set -eu
 #     apt-get install -y htop
-# - mode: data                 # writes `content` to `path` instead of running a script
+# - mode: data
 #   path: /etc/motd
 #   content: "hello"
-#   owner: "root:root"         # Built-in default: root:root
-#   permissions: "0644"        # Built-in default: 0644
-#   overwrite: true            # Built-in default: true
 
-# Readiness probes run by the host through the agent until they succeed
-# (timeout: `vmuc start --timeout`). `hint` is printed on failure.
+# Readiness probes the host runs through the agent until they succeed
+# (timeout: `vmuc start --timeout`).
 # Built-in default: []
 probes: null
-# - mode: readiness            # the only mode. Built-in default: readiness
-#   description: "docker is running"
+# - description: "docker is running"
 #   script: |
 #     #!/bin/sh
 #     docker info >/dev/null
@@ -145,28 +140,34 @@ probes: null
 # Environment variables for provisioning scripts and the login shell.
 # Built-in default: {}
 env: null
-# env:
-#   HTTP_PROXY: http://proxy.example.com:3128
+# HTTP_PROXY: http://proxy.example.com:3128
 
 # Template parameters, exported to scripts as VMUC_PARAM_<KEY>. Keys
-# must match [A-Za-z_][A-Za-z0-9_]*.
+# match [A-Za-z_][A-Za-z0-9_]*.
 # Built-in default: {}
 param: null
 
+# The guest account `vmuc shell` logs in as.
 user:
-  # The guest login user.
+  # Login name.
   # Built-in default: the host user name when it is a valid POSIX name
   # that is not a system account, else "vmuc"
   name: null
+  # Numeric user ID (matching the host's keeps shared files' owners
+  # right).
   # Built-in default: the host uid when 500 <= uid < 60000, else 1000
   uid: null
-  # Built-in default: /home/<name>.linux (keeps clear of the mirrored host home)
+  # Home directory.
+  # Built-in default: /home/<name>.linux (clear of the mirrored host
+  # home)
   home: null
+  # Login shell.
   # Built-in default: /bin/bash
   shell: null
   # GECOS field.
   # Built-in default: ""
   comment: null
+  # Whether sudo asks for a password.
   # Built-in default: true
   passwordlessSudo: null
 
@@ -174,12 +175,14 @@ user:
 # Built-in default: the host's zone, else "UTC"
 timezone: null
 
+# How vmuc takes memory back beyond free page reporting, which is always
+# on.
 memoryPolicy:
   # Inflate the balloon when macOS reports memory pressure (hysteresis
-  # rules in docs/plan.md). Free page reporting is always on regardless.
+  # rules in docs/plan.md).
   # Built-in default: false
   pressureBalloon: null
-  # The balloon never pushes guest "available" memory below this.
+  # The balloon never pushes the guest's available memory below this.
   # Built-in default: "256MiB"
   minAvailable: null
 
@@ -187,11 +190,12 @@ memoryPolicy:
 # Built-in default: ""
 message: null
 
-# Nameservers for the guest. When set, the guest uses them directly
-# instead of the host resolver.
-# Built-in default: [] (the NAT's DNS forwarder, see hostResolver)
+# Nameservers written to the guest's resolv.conf instead.
+# Built-in default: [] (the DNS server vmnet's DHCP hands out: the
+# host's resolver)
 dns: null
 
-# Resolve guest DNS queries through the host's resolver via the NAT.
+# Reserved for vmuc's own user-space network (v0.2); ignored with vmnet,
+# whose DHCP already points the guest at the host's resolver.
 # Built-in default: true
 hostResolver: null
