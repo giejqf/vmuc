@@ -99,6 +99,8 @@ mod relay {
     const BATCH: usize = 64;
     /// The virtio-net header vmnet adds to every packet when asked to.
     const VIRTIO_HDR: usize = 12;
+    /// Largest TSO segment: a 64 KiB IP packet in an Ethernet frame.
+    const TSO_FRAME: usize = 65_535 + 14;
 
     struct Start {
         sem: dispatch_semaphore_t,
@@ -270,10 +272,16 @@ mod relay {
             let line = serde_json::to_vec(&hello).map_err(|e| e.to_string())?;
             socket.send(&line).map_err(|e| format!("hello: {e}"))?;
 
-            let size = usize::try_from(hello.max_packet_size)
+            // With TSO vmnet hands over and accepts 64 KiB segments whatever
+            // max_packet_size says, each behind its virtio-net header.
+            let reported = usize::try_from(hello.max_packet_size)
                 .unwrap_or(1514)
-                .max(1514)
-                + if hello.virtio_header { VIRTIO_HDR } else { 0 };
+                .max(1514);
+            let size = if hello.virtio_header {
+                reported.max(TSO_FRAME) + VIRTIO_HDR
+            } else {
+                reported
+            };
             let to_vmm = Box::leak(Box::new(ToVmm {
                 iface,
                 fd: socket.as_raw_fd(),
