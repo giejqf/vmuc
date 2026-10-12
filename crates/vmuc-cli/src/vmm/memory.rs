@@ -187,6 +187,7 @@ mod tests {
         assert_eq!(pressure_target(0, 0, GIB / 4), 0);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn footprint_of_this_process_is_plausible() {
         let f = host_footprint();
