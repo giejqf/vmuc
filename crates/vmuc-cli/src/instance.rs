@@ -413,13 +413,12 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
 
 /// `vmuc edit`: the instance's config in `$VISUAL`/`$EDITOR` (else `vi`),
 /// checked before it replaces the original. An edit that does not check
-/// out is kept beside it to fix.
+/// out is kept beside it, and the next `vmuc edit` reopens it.
 pub fn edit(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     let inst = Instance::open(home, name)?;
     let path = inst.dir.join(files::CONFIG);
     let original = fs::read_to_string(&path).with_context(|| path.display().to_string())?;
-    let draft = inst.dir.join("vmuc.yaml.edit");
-    fs::write(&draft, &original)?;
+    let draft = open_draft(&inst.dir, &original)?;
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".into());
@@ -439,7 +438,7 @@ pub fn edit(home: &VmucHome, name: &str) -> anyhow::Result<()> {
         );
     }
     let edited = fs::read_to_string(&draft)?;
-    match apply_edit(home, &inst, &original, &edited) {
+    match apply_edit(home, &inst, &draft, &original, &edited) {
         Ok(changed) => {
             let _ = fs::remove_file(&draft);
             if !changed {
@@ -457,11 +456,27 @@ pub fn edit(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     }
 }
 
+/// The draft `vmuc edit` opens: one an earlier edit left behind, or a
+/// fresh copy of `original`.
+fn open_draft(dir: &Path, original: &str) -> anyhow::Result<PathBuf> {
+    let draft = dir.join("vmuc.yaml.edit");
+    if draft.exists() {
+        eprintln!(
+            "reopening the edit that did not check out ({}; delete it to start over)",
+            draft.display()
+        );
+    } else {
+        fs::write(&draft, original)?;
+    }
+    Ok(draft)
+}
+
 /// Checks an edited config as `start` would and puts it in place.
 /// `Ok(false)` when nothing changed.
 fn apply_edit(
     home: &VmucHome,
     inst: &Instance,
+    draft: &Path,
     original: &str,
     edited: &str,
 ) -> anyhow::Result<bool> {
@@ -469,7 +484,7 @@ fn apply_edit(
         return Ok(false);
     }
     let path = inst.dir.join(files::CONFIG);
-    let cfg = InstanceConfig::from_yaml(edited, &path.display().to_string())?;
+    let cfg = InstanceConfig::from_yaml(edited, &draft.display().to_string())?;
     resolve(home, &inst.name, &cfg)?;
     let tmp = inst.dir.join("vmuc.yaml.tmp");
     fs::write(&tmp, edited)?;
@@ -567,22 +582,33 @@ mod tests {
             name: "dev".into(),
             dir: inst_dir.clone(),
         };
+        let draft = inst_dir.join("vmuc.yaml.edit");
         assert!(
-            !apply_edit(&home, &inst, original, original).unwrap(),
+            !apply_edit(&home, &inst, &draft, original, original).unwrap(),
             "unchanged"
         );
         let bad = original.replace("cpus: 2", "cpuz: 4");
-        assert!(apply_edit(&home, &inst, original, &bad).is_err());
+        assert!(apply_edit(&home, &inst, &draft, original, &bad).is_err());
         assert_eq!(
             fs::read_to_string(inst_dir.join(files::CONFIG)).unwrap(),
             original
         );
         let good = original.replace("cpus: 2", "cpus: 4");
-        assert!(apply_edit(&home, &inst, original, &good).unwrap());
+        assert!(apply_edit(&home, &inst, &draft, original, &good).unwrap());
         assert_eq!(
             fs::read_to_string(inst_dir.join(files::CONFIG)).unwrap(),
             good
         );
+    }
+
+    #[test]
+    fn a_draft_left_behind_is_reopened() {
+        let dir = tempfile::tempdir().unwrap();
+        let draft = open_draft(dir.path(), "cpus: 2\n").unwrap();
+        assert_eq!(fs::read_to_string(&draft).unwrap(), "cpus: 2\n");
+        fs::write(&draft, "cpuz: 4\n").unwrap();
+        let again = open_draft(dir.path(), "cpus: 2\n").unwrap();
+        assert_eq!(fs::read_to_string(again).unwrap(), "cpuz: 4\n");
     }
 
     #[test]
