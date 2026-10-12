@@ -3,9 +3,11 @@
 //! privileged piece), the VMM's side of starting it, and the port
 //! forwarder. The user-space NAT is v0.2 work.
 
+pub mod handoff;
 pub mod helper;
 pub mod launch;
 pub mod region;
 pub mod ring;
+pub mod ringrelay;
 #[cfg(target_os = "macos")]
 pub mod vmnet;

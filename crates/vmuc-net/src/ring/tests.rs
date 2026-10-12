@@ -105,6 +105,16 @@ fn a_full_ring_waits_and_both_sides_ask_for_kicks() {
 }
 
 #[test]
+fn an_empty_publish_keeps_the_consumers_request_to_be_kicked() {
+    let (mut p, mut c, _r) = pair();
+    assert!(c.prepare_sleep());
+    let _unused = p.reserve(100).unwrap();
+    assert!(!p.publish(), "nothing committed: no kick, request kept");
+    assert!(push(&mut p, b"now"));
+    assert!(p.publish(), "the kick goes with the first real publish");
+}
+
+#[test]
 fn two_threads_move_forty_thousand_frames_in_order() {
     // ~460 MiB: the 4 MiB ring wraps over a hundred times.
     const N: u32 = 40_000;

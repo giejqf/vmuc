@@ -132,6 +132,8 @@ pub struct Producer {
     cursor: u64,
     /// End of the last committed record (publish moves head to it).
     committed: u64,
+    /// What `head` holds.
+    published: u64,
 }
 
 // SAFETY: the producer is used by one thread at a time; the region stays
@@ -148,6 +150,7 @@ impl Producer {
             base,
             cursor: head,
             committed: head,
+            published: head,
         }
     }
 
@@ -215,12 +218,23 @@ impl Producer {
 
     /// Makes committed records visible and forgets uncommitted
     /// reservations. `true` when the consumer is asleep and must be kicked.
+    /// With nothing new committed the consumer's request to be kicked is
+    /// left for the publish that has something.
     pub fn publish(&mut self) -> bool {
         self.cursor = self.committed;
+        if self.committed == self.published {
+            return false;
+        }
+        self.published = self.committed;
         // SAFETY: control offsets of a ring base.
         unsafe { word64(self.base, HEAD) }.store(self.committed, Ordering::SeqCst);
         // SAFETY: as above.
         unsafe { word32(self.base, CONSUMER_SLEEPING) }.swap(0, Ordering::SeqCst) != 0
+    }
+
+    /// Forgets uncommitted reservations.
+    pub fn abandon(&mut self) {
+        self.cursor = self.committed;
     }
 
     /// Before waiting for space: asks to be kicked when the consumer frees
