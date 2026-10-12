@@ -8,6 +8,7 @@
 pub mod app;
 pub mod history;
 pub mod source;
+pub mod text;
 
 pub use app::{App, Command};
 pub use source::{Action, Instance, Live, Source};
