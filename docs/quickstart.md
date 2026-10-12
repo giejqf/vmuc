@@ -38,12 +38,19 @@ vmuc start ubuntu         # boots; returns when ssh works (~3 s)
 vmuc shell ubuntu         # or: vmuc shell ubuntu -- uname -a
 vmuc list
 vmuc stop ubuntu          # --force if the guest does not power off
-vmuc delete ubuntu
+vmuc delete ubuntu        # --force stops it first
 ```
 
-`create` takes `--cpus`, `--memory 8GiB`, `--disk 100GiB` and
-`--mount DIR[:w]`. `vmuc template list` shows the templates (`ubuntu`,
-`alpine`, `docker`, …).
+`create` takes `--cpus`, `--memory 8GiB`, `--disk 100GiB`,
+`--mount DIR[:w]` and `--set path=value` for any other setting.
+`vmuc template list` shows the templates (`ubuntu`, `alpine`, `docker`,
+…). `vmuc start --foreground` keeps the VM attached to the terminal
+with its log; Ctrl-C powers it off.
+
+`vmuc shell` starts in the guest path of your current directory when it
+is under a share (your home is, by default), else in the guest home;
+`--workdir DIR` picks one. `vmuc completion zsh|bash|fish` prints a
+completion script, and `vmuc prune` empties the image cache.
 
 ## Files
 
@@ -61,6 +68,13 @@ mounts:
 macOS asks for permission the first time the guest reads a protected
 folder (Desktop, Documents, Downloads), and the guest waits until you
 answer.
+
+`vmuc copy` copies over ssh in either direction (`-r` for directories):
+
+```
+vmuc copy ./build.tar ubuntu:/tmp/
+vmuc copy -r ubuntu:/var/log/apt ./apt-logs
+```
 
 ## Ports
 
