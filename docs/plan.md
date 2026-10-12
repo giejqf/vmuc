@@ -180,15 +180,17 @@ Two processes share the work:
 - `vmuc-vmnet-helper` (root, tiny, audited): opens one vmnet interface
   per instance with `vmnet_start_interface` in `VMNET_SHARED_MODE`
   (default) or `VMNET_BRIDGED_MODE` with the configured host interface,
-  and relays Ethernet frames between the interface and a `SOCK_DGRAM`
-  unix socketpair handed to it by the VMM. It parses nothing. It is
-  started with `sudo` through a sudoers rule that `vmuc sudoers` prints
-  (Lima's `limactl sudoers` pattern) and exits when its socket closes.
-  It never touches guest memory or the VM.
-- The VMM's virtio-net device (MRG_RXBUF, checksum offload negotiated
-  off because frames hit a real bridge) moves frames between the
-  virtqueues and that socket on a dedicated thread, batching per
-  `recvmsg_x`/`sendmsg_x` where available.
+  with TSO and virtio-net headers on macOS 15.4+, and relays Ethernet
+  frames between the interface and the VMM through two shared-memory
+  rings whose fd arrives over a `SOCK_DGRAM` unix socketpair (which also
+  carries wake-ups; ADR 0001). Older helpers relay over the socketpair
+  itself. Frames are opaque to it; it bounds-checks the ring indices and
+  record headers it reads. It is started with `sudo` through a sudoers
+  rule that `vmuc sudoers` prints (Lima's `limactl sudoers` pattern) and
+  exits when the VMM goes. It never touches guest memory or the VM.
+- The VMM's virtio-net device (MRG_RXBUF; checksum offload and TSO when
+  the helper speaks virtio-net headers) moves frames between the
+  virtqueues and the rings on a dedicated thread.
 
 In shared mode macOS runs DHCP and NAT: the guest gets a `192.168.64.0/24`
 address reachable from the host, so `ssh user@<guest-ip>` works without
