@@ -15,9 +15,10 @@ Pro), memory the guest frees is back in macOS within seconds, your home
 directory is shared read-only over vmuc's own virtiofs, guest ports
 appear on the host's localhost, and `vmuc tui` watches it all. Guest
 networking through vmnet needs a small root helper (`vmuc sudoers`
-prints how to install it) and has not yet been run end to end. See
-`docs/plan.md` for the roadmap and `docs/feasibility.md` for why this
-works.
+prints how to install it) and has not yet been run end to end. Start
+with `docs/quickstart.md`; `docs/benchmarks/README.md` has the numbers
+against the targets, `docs/plan.md` the roadmap and
+`docs/feasibility.md` why this works.
 
 ```
 vmuc create ubuntu        # download, verify and convert the cloud image
