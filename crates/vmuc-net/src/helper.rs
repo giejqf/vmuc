@@ -26,6 +26,10 @@ pub struct Hello {
     /// helpers, which send bare frames.
     #[serde(default)]
     pub virtio_header: bool,
+    /// The helper can relay through shared-memory rings (ADR 0001): the
+    /// VMM answers with the region's fd. Absent from older helpers.
+    #[serde(default)]
+    pub rings: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +80,8 @@ pub use relay::run;
 
 #[cfg(target_os = "macos")]
 mod relay;
+#[cfg(target_os = "macos")]
+mod rings;
 
 #[cfg(test)]
 mod tests {
@@ -163,11 +169,13 @@ mod tests {
             end: Some("192.168.64.254".into()),
             mask: Some("255.255.255.0".into()),
             virtio_header: true,
+            rings: true,
         };
         let s = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<Hello>(&s).unwrap(), h);
         // An older helper's hello has no virtio_header: bare frames.
         let old = r#"{"mtu":1500,"max_packet_size":1514,"start":null,"end":null,"mask":null}"#;
-        assert!(!serde_json::from_str::<Hello>(old).unwrap().virtio_header);
+        let old = serde_json::from_str::<Hello>(old).unwrap();
+        assert!(!old.virtio_header && !old.rings);
     }
 }

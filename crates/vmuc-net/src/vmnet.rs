@@ -107,6 +107,11 @@ unsafe extern "C" {
     pub fn dispatch_semaphore_wait(sem: dispatch_semaphore_t, timeout: u64) -> isize;
     pub fn dispatch_semaphore_signal(sem: dispatch_semaphore_t) -> isize;
     pub fn dispatch_time(when: u64, delta: i64) -> u64;
+    pub fn dispatch_async_f(
+        queue: dispatch_queue_t,
+        context: *mut c_void,
+        work: unsafe extern "C" fn(*mut c_void),
+    );
 }
 
 /// `BLOCK_IS_GLOBAL`: `Block_copy` returns the block unchanged.

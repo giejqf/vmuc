@@ -7,6 +7,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixDatagram;
 
 use super::{Hello, Mode};
+use crate::handoff::{self, First};
 use crate::vmnet::{
     VMNET_BRIDGED_MODE, VMNET_INTERFACE_PACKETS_AVAILABLE, VMNET_SHARED_MODE, VMNET_SUCCESS,
     cstring, dict_string, dispatch_queue_create, dispatch_semaphore_create,
@@ -51,6 +52,7 @@ unsafe extern "C" fn on_start(ctx: *mut c_void, status: vmnet_return_t, params: 
                 end: dict_string(params, vmnet_end_address_key),
                 mask: dict_string(params, vmnet_subnet_mask_key),
                 virtio_header: s.virtio_header,
+                rings: true,
             }
         });
         // SAFETY: as above. Zero (unknown) means one packet per call.
@@ -211,18 +213,47 @@ pub fn run(mode: &Mode) -> Result<(), String> {
         } else {
             reported
         };
-        let to_vmm = Box::leak(Box::new(ToVmm {
-            iface,
-            fd: socket.as_raw_fd(),
-            bufs: (0..st.read_max).map(|_| vec![0u8; size]).collect(),
-        }));
-        let cb = event_block(on_packets, std::ptr::from_mut(to_vmm).cast());
-        if vmnet_interface_set_event_callback(iface, VMNET_INTERFACE_PACKETS_AVAILABLE, queue, cb)
-            != VMNET_SUCCESS
-        {
-            return Err("vmnet_interface_set_event_callback failed".into());
+        set_recv_wait(socket.as_raw_fd());
+        // The VMM answers the hello with the shared region (rings), or an
+        // older VMM simply starts sending frames.
+        let mut first = vec![0u8; size];
+        let mode = loop {
+            match handoff::recv_first(socket.as_raw_fd(), &mut first) {
+                First::Idle if idle_and_connected(socket.as_raw_fd()) => {}
+                other => break other,
+            }
+        };
+        match mode {
+            First::Region(region) => super::rings::run(
+                socket.as_raw_fd(),
+                iface,
+                queue,
+                &region,
+                size,
+                st.read_max,
+                st.write_max,
+            )?,
+            First::Frame(n) => {
+                let to_vmm = Box::leak(Box::new(ToVmm {
+                    iface,
+                    fd: socket.as_raw_fd(),
+                    bufs: (0..st.read_max).map(|_| vec![0u8; size]).collect(),
+                }));
+                let cb = event_block(on_packets, std::ptr::from_mut(to_vmm).cast());
+                if vmnet_interface_set_event_callback(
+                    iface,
+                    VMNET_INTERFACE_PACKETS_AVAILABLE,
+                    queue,
+                    cb,
+                ) != VMNET_SUCCESS
+                {
+                    return Err("vmnet_interface_set_event_callback failed".into());
+                }
+                write_frames(iface, &mut [(&mut first, n)]);
+                relay_to_vmnet(socket.as_raw_fd(), iface, size, st.write_max);
+            }
+            First::Idle | First::Closed => {}
         }
-        relay_to_vmnet(socket.as_raw_fd(), iface, size, st.write_max);
         let stopped = dispatch_semaphore_create(0);
         let done = status_block(on_stop, stopped);
         if vmnet_stop_interface(iface, queue, done) == VMNET_SUCCESS {
@@ -240,6 +271,30 @@ const RECV_WAIT: libc::timeval = libc::timeval {
     tv_sec: 1,
     tv_usec: 0,
 };
+
+/// Bounds every blocking recv on the VMM's socket by [`RECV_WAIT`].
+fn set_recv_wait(fd: i32) {
+    let wait = RECV_WAIT;
+    // SAFETY: a valid socket and a timeval option value.
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const wait).cast(),
+            size_of::<libc::timeval>() as libc::socklen_t,
+        );
+    }
+}
+
+/// After a recv returned an error: it only timed out (or was
+/// interrupted) and the VMM is still there.
+pub(super) fn idle_and_connected(fd: i32) -> bool {
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EAGAIN | libc::EINTR)
+    ) && peer_connected(fd)
+}
 
 /// What one wait on the VMM's socket brought.
 #[derive(Debug, PartialEq, Eq)]
@@ -314,42 +369,40 @@ pub(super) fn send_frame(fd: i32, frame: &[u8]) {
 fn relay_to_vmnet(fd: i32, iface: interface_ref, size: usize, batch: usize) {
     let mut bufs: Vec<Vec<u8>> = (0..batch).map(|_| vec![0u8; size]).collect();
     let mut lens = vec![0usize; batch];
-    let wait = RECV_WAIT;
-    // SAFETY: a valid socket and a timeval option value.
-    unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_RCVTIMEO,
-            (&raw const wait).cast(),
-            size_of::<libc::timeval>() as libc::socklen_t,
-        );
-    }
     loop {
         let count = match recv_batch(fd, &mut bufs, &mut lens) {
             Batch::Frames(n) => n,
             Batch::Idle => continue,
             Batch::Closed => return,
         };
-        let mut iovs: Vec<libc::iovec> = bufs[..count]
+        let mut batch: Vec<(&mut Vec<u8>, usize)> = bufs
             .iter_mut()
-            .zip(&lens)
-            .map(|(b, &n)| libc::iovec {
-                iov_base: b.as_mut_ptr().cast(),
-                iov_len: n,
-            })
+            .zip(lens.iter().copied())
+            .take(count)
             .collect();
-        let mut pkts: Vec<vmpktdesc> = iovs
-            .iter_mut()
-            .map(|v| vmpktdesc {
-                vm_pkt_size: v.iov_len,
-                vm_pkt_iov: v,
-                vm_pkt_iovcnt: 1,
-                vm_flags: 0,
-            })
-            .collect();
-        let mut n = count as i32;
-        // SAFETY: every descriptor points at one of our filled buffers.
-        unsafe { vmnet_write(iface, pkts.as_mut_ptr(), &raw mut n) };
+        write_frames(iface, &mut batch);
     }
+}
+
+/// Hands frames in our own buffers to vmnet in one call.
+fn write_frames(iface: interface_ref, frames: &mut [(&mut Vec<u8>, usize)]) {
+    let mut iovs: Vec<libc::iovec> = frames
+        .iter_mut()
+        .map(|(b, n)| libc::iovec {
+            iov_base: b.as_mut_ptr().cast(),
+            iov_len: *n,
+        })
+        .collect();
+    let mut pkts: Vec<vmpktdesc> = iovs
+        .iter_mut()
+        .map(|v| vmpktdesc {
+            vm_pkt_size: v.iov_len,
+            vm_pkt_iov: v,
+            vm_pkt_iovcnt: 1,
+            vm_flags: 0,
+        })
+        .collect();
+    let mut n = pkts.len() as i32;
+    // SAFETY: every descriptor points at one of our filled buffers.
+    unsafe { vmnet_write(iface, pkts.as_mut_ptr(), &raw mut n) };
 }
