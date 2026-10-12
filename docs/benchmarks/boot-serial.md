@@ -15,3 +15,4 @@ the 31 MiB kernel, boot, power-off and teardown. Medians unless noted.
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | 6.18.55-vmuc | 4 | 10 | 620 | 898 | 1159 | `-` |
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | 6.18.55-vmuc | 4 | 10 | 120 | 170 | 332 | `initcall_blacklist=raid6_select_algo` |
 | 2026-10-11 | Apple M4 Pro, macOS 26.6.2 | 6.18.55-vmuc | 1 | 10 | 115 | 163 | 327 | `initcall_blacklist=raid6_select_algo` |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | 6.18.55-vmuc | 4 | 10 | 120 | 178 | 455 | `-` |

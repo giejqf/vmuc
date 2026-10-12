@@ -7,8 +7,8 @@ vCPUs unless noted.
 
 | Metric | Target | vmuc | Lima 2.2.1 on VZ, same Mac | Status | Source |
 |---|---|---|---|---|---|
-| `vmuc start` → ssh prompt, warm cache | < 3 s | 3.25 s median (start returns at 3.04 s), with a vmnet NIC | 7.73 s | close | [boot-ssh](boot-ssh.md) |
-| Kernel to `init` on the serial console | < 400 ms | 898 ms with the current kernel; 170 ms with the RAID6 boot benchmark skipped | — | met once the kernel with `CONFIG_RAID6_PQ_BENCHMARK=n` is built | [boot-serial](boot-serial.md) |
+| `vmuc start` → ssh prompt, warm cache | < 3 s | 2.58 s median (start returns at 2.35 s), with a vmnet NIC | 7.73 s | met | [boot-ssh](boot-ssh.md) |
+| Kernel to `init` on the serial console | < 400 ms | 120 ms median, kernel built without the RAID6 boot benchmark | — | met | [boot-serial](boot-serial.md) |
 | Idle CPU, 4 vCPUs, Ubuntu idle | < 0.5 % | 0.33 % of one core | 0.60 % (VZ process + host agent) | met | [idle-cpu](idle-cpu.md) |
 | Host footprint, idle guest after first reclaim | < 350 MiB | 467 MiB | 802 MiB idle; 2749 MiB once the guest has used and freed 2 GiB | not met (but well under VZ) | [mem-reclaim](mem-reclaim.md) |
 | Freed guest memory back to the host | ≥ 90 % within 10 s | 77–100 % of 2 GiB within 10 s (90 % at 10.4 s in the latest run) | 0 %, even after the guest drops caches | borderline | [mem-reclaim](mem-reclaim.md) |
@@ -42,6 +42,3 @@ Re-run one with `make bench-local NAME=<probe>` on the Mac (or
   against VZ's 802 MiB, mostly page cache from boot; free page reporting
   only returns memory the guest frees, so it comes back on `vmuc reclaim`
   (467 MiB) and never on VZ.
-- **Boot.** Most of the gap to 400 ms was the kernel benchmarking RAID6
-  algorithms at boot; the config fix is committed and waits for the
-  kernel workflow to build it.
