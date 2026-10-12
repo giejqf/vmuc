@@ -10,6 +10,7 @@
 //! installed separately, as Lima does for socket_vmnet).
 
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,39 @@ use crate::helper::{Hello, Mode};
 
 /// Where `vmuc sudoers` tells users to install the helper.
 pub const DEFAULT_HELPER: &str = "/usr/local/libexec/vmuc/vmuc-vmnet-helper";
+
+/// Bytes of frames queued per direction. A unix datagram socket holds
+/// 4 KiB on macOS (`net.local.dgram.recvspace`), two frames, and a send
+/// into a full one fails with ENOBUFS instead of waiting, so every burst
+/// beyond two frames was dropped.
+pub const SOCKET_BUFFER: usize = 4 << 20;
+
+/// Send and receive buffer sizes of a socket.
+pub trait SocketBuffers {
+    fn set_buffers(&self, bytes: usize) -> std::io::Result<()>;
+}
+
+impl SocketBuffers for UnixDatagram {
+    fn set_buffers(&self, bytes: usize) -> std::io::Result<()> {
+        let v = libc::c_int::try_from(bytes).unwrap_or(libc::c_int::MAX);
+        for opt in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+            // SAFETY: a valid socket and a c_int option value.
+            let rc = unsafe {
+                libc::setsockopt(
+                    self.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    opt,
+                    (&raw const v).cast(),
+                    size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if rc != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
@@ -93,6 +127,8 @@ pub fn launch(helper: &Path, mode: &Mode) -> Result<Launched, LaunchError> {
 
 fn launch_with(cmd: &mut Command, mode: &Mode) -> Result<Launched, LaunchError> {
     let (ours, theirs) = UnixDatagram::pair()?;
+    ours.set_buffers(SOCKET_BUFFER)?;
+    theirs.set_buffers(SOCKET_BUFFER)?;
     let mut child = cmd
         .args(mode.to_args())
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs)))
@@ -147,6 +183,24 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    /// macOS only: Linux caps datagram queues by count
+    /// (`net.unix.max_dgram_qlen`), not bytes, and the helper is Mac-only.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_socketpair_queues_bursts() {
+        let frame = [0u8; 1514];
+        let fits = |a: &UnixDatagram| (0..2000).take_while(|_| a.send(&frame).is_ok()).count();
+        let (a, _b) = UnixDatagram::pair().unwrap();
+        a.set_nonblocking(true).unwrap();
+        let default = fits(&a);
+        assert!(default < 10, "default buffers held {default} frames");
+        let (a, b) = UnixDatagram::pair().unwrap();
+        a.set_buffers(SOCKET_BUFFER).unwrap();
+        b.set_buffers(SOCKET_BUFFER).unwrap();
+        a.set_nonblocking(true).unwrap();
+        assert_eq!(fits(&a), 2000);
+    }
 
     #[test]
     fn ownership_check_walks_every_ancestor() {
