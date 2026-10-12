@@ -97,7 +97,7 @@ fn guest_pings_a_peer_through_virtio_net() {
     })
     .unwrap();
     b.add_platform_devices(out.clone()).unwrap();
-    b.add_virtio(Box::new(Net::new(GUEST_MAC, ours, false).unwrap()))
+    b.add_virtio(Box::new(Net::new(GUEST_MAC, ours, false, None).unwrap()))
         .unwrap();
     let vm = b.boot(&kernel, Some(&initrd)).unwrap();
     watchdog(vm.machine(), Duration::from_secs(30));

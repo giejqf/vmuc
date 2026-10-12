@@ -16,6 +16,9 @@ tracing = { workspace = true }
 [dependencies.vmuc-fs]
 path = "../vmuc-fs"
 
+[dependencies.vmuc-net]
+path = "../vmuc-net"
+
 [dependencies.vmuc-image]
 path = "../vmuc-image"
 default-features = false

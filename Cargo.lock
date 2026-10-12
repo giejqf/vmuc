@@ -1853,6 +1853,7 @@ dependencies = [
  "tracing",
  "vmuc-fs",
  "vmuc-image",
+ "vmuc-net",
 ]
 
 [[package]]

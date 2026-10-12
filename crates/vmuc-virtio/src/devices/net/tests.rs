@@ -29,7 +29,7 @@ fn rig_with(offload: bool, negotiated: u64) -> Rig {
     let mut ds = Driver::many(2, 16, true);
     let tx = ds.pop().unwrap();
     let rx = ds.pop().unwrap();
-    let mut net = Net::new(MAC, ours, offload).unwrap();
+    let mut net = Net::new(MAC, ours, offload, None).unwrap();
     net.activate(Activation {
         mem: rx.mem.clone(),
         queues: vec![rx.queue.clone(), tx.queue.clone()],
@@ -227,4 +227,140 @@ fn without_mergeable_buffers_an_oversized_frame_is_dropped() {
     let mut got = vec![0u8; len as usize];
     r.rx.mem.read(buf, &mut got).unwrap();
     assert_eq!(&got[12..], small.as_slice());
+}
+
+mod with_rings {
+    use std::sync::Arc;
+
+    use vmuc_net::region::Region;
+    use vmuc_net::ring::{Consumer, Direction, Next, Producer, REGION_BYTES};
+
+    use super::*;
+
+    /// The device in ring mode, and the test as the helper.
+    struct RingRig {
+        rx: Driver,
+        tx: Driver,
+        net: Net,
+        peer: UnixDatagram,
+        to_vmm: Producer,
+        from_vmm: Consumer,
+        region: Arc<Region>,
+    }
+
+    fn ring_rig() -> RingRig {
+        let region = Arc::new(Region::anonymous(REGION_BYTES).unwrap());
+        let (ours, peer) = UnixDatagram::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut ds = Driver::many(2, 16, true);
+        let tx = ds.pop().unwrap();
+        let rx = ds.pop().unwrap();
+        let mut net = Net::new(MAC, ours, true, Some(&region)).unwrap();
+        net.activate(Activation {
+            mem: rx.mem.clone(),
+            queues: vec![rx.queue.clone(), tx.queue.clone()],
+            irq: Arc::new(IrqStatus::new(Arc::new(TestIrq::default()))),
+            features: features::RING_EVENT_IDX | F_MRG_RXBUF | offload::OFFERED,
+        })
+        .unwrap();
+        RingRig {
+            rx,
+            tx,
+            net,
+            peer,
+            to_vmm: Producer::new(Arc::clone(&region), Direction::ToVmm),
+            from_vmm: Consumer::new(Arc::clone(&region), Direction::ToHelper),
+            region,
+        }
+    }
+
+    fn take(c: &mut Consumer) -> Vec<u8> {
+        let t = Instant::now();
+        loop {
+            match c.peek() {
+                Next::Frame { data, len } => {
+                    let mut v = vec![0u8; len];
+                    // SAFETY: `peek` validated `len` bytes at `data`.
+                    unsafe { std::ptr::copy_nonoverlapping(data, v.as_mut_ptr(), len) };
+                    c.advance();
+                    c.release();
+                    return v;
+                }
+                Next::Empty => {
+                    assert!(t.elapsed() < Duration::from_secs(5), "no frame");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Next::Corrupt(why) => panic!("{why}"),
+            }
+        }
+    }
+
+    #[test]
+    fn transmit_lands_in_the_helper_ring_and_kicks_a_sleeping_helper() {
+        let mut r = ring_rig();
+        assert!(r.from_vmm.prepare_sleep());
+        let mut sent = hdr(1, 1).to_vec();
+        sent.extend(frame(5000));
+        let b = r.tx.buffer(&sent, sent.len() as u32);
+        r.tx.post(&[(b, sent.len() as u32, false)]);
+        r.net.doorbell().ring(1);
+        let mut kick = [0u8; 8];
+        assert_eq!(r.peer.recv(&mut kick).unwrap(), 1, "kicked");
+        assert_eq!(take(&mut r.from_vmm), sent, "header and frame, untouched");
+        wait_used(&r.tx, 1);
+    }
+
+    #[test]
+    fn receive_waits_in_the_ring_for_buffers_then_delivers() {
+        let mut r = ring_rig();
+        let mut f = hdr(0, 0).to_vec();
+        f.extend(frame(1800));
+        let slot = r.to_vmm.reserve(f.len()).unwrap();
+        // SAFETY: the slot has room for the frame.
+        unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), slot.data(), f.len()) };
+        r.to_vmm.commit(&slot, f.len());
+        r.to_vmm.publish();
+        let a = post_rx(&mut r.rx, 1024);
+        r.peer.send(b"k").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            r.rx.mem.load_u16_acquire(r.rx.queue.used + 2).unwrap(),
+            0,
+            "one buffer is not enough: the frame stays in the ring"
+        );
+        let b = post_rx(&mut r.rx, 1024);
+        r.net.doorbell().ring(0);
+        wait_used(&r.rx, 2);
+        let mut got = vec![0u8; 2048];
+        r.rx.mem.read(a, &mut got[..1024]).unwrap();
+        r.rx.mem.read(b, &mut got[1024..]).unwrap();
+        assert_eq!(u16::from_le_bytes([got[10], got[11]]), 2, "num_buffers");
+        assert_eq!(&got[12..f.len()], &f[12..]);
+    }
+
+    #[allow(clippy::cast_ptr_alignment)] // the region is page-aligned
+    #[test]
+    fn a_corrupt_ring_from_the_helper_stops_receive_not_the_device() {
+        let mut r = ring_rig();
+        // Head far beyond anything published.
+        // SAFETY: the VMM-bound ring's head is at its start, 8-aligned.
+        unsafe {
+            r.region
+                .base()
+                .add(vmuc_net::ring::RING_BYTES)
+                .cast::<u64>()
+                .write_volatile(u64::MAX / 2);
+        }
+        post_rx(&mut r.rx, 2048);
+        r.peer.send(b"k").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(r.rx.mem.load_u16_acquire(r.rx.queue.used + 2).unwrap(), 0);
+        // Transmit still works.
+        let mut sent = hdr(0, 0).to_vec();
+        sent.extend(frame(100));
+        let b = r.tx.buffer(&sent, sent.len() as u32);
+        r.tx.post(&[(b, sent.len() as u32, false)]);
+        r.net.doorbell().ring(1);
+        assert_eq!(take(&mut r.from_vmm), sent);
+    }
 }

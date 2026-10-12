@@ -15,9 +15,13 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::handoff;
 use crate::helper::{Hello, Mode};
+use crate::region::Region;
+use crate::ring::REGION_BYTES;
 
 /// Where `vmuc sudoers` tells users to install the helper.
 pub const DEFAULT_HELPER: &str = "/usr/local/libexec/vmuc/vmuc-vmnet-helper";
@@ -117,6 +121,25 @@ pub struct Launched {
     pub socket: UnixDatagram,
     pub hello: Hello,
     pub child: Child,
+    /// The shared rings, when the helper offered them and took the region
+    /// (ADR 0001); otherwise frames travel over `socket`.
+    pub region: Option<Arc<Region>>,
+}
+
+/// Creates the shared region and hands it to the helper. Without it the
+/// relay stays on the socket, which the helper also accepts.
+fn offer_rings(socket: &UnixDatagram) -> Option<Arc<Region>> {
+    let made = Region::create(REGION_BYTES).and_then(|(region, fd)| {
+        handoff::send_region(socket.as_raw_fd(), &fd)?;
+        Ok(region)
+    });
+    match made {
+        Ok(region) => Some(Arc::new(region)),
+        Err(e) => {
+            tracing::warn!("shared rings unavailable, relaying over the socket: {e}");
+            None
+        }
+    }
 }
 
 /// Starts the helper as root through `sudo -n` and waits for its hello.
@@ -172,10 +195,16 @@ fn launch_with(cmd: &mut Command, mode: &Mode) -> Result<Launched, LaunchError> 
         }
     };
     ours.set_read_timeout(None)?;
+    let region = if hello.rings {
+        offer_rings(&ours)
+    } else {
+        None
+    };
     Ok(Launched {
         socket: ours,
         hello,
         child,
+        region,
     })
 }
 

@@ -31,8 +31,10 @@ use crate::device::{
 };
 use crate::devices::Segments;
 use crate::queue::DescChain;
+use vmuc_net::region::Region;
 
 mod offload;
+mod rings;
 
 const F_MTU: u64 = 1 << 3;
 const F_MAC: u64 = 1 << 5;
@@ -63,6 +65,8 @@ enum Ctrl {
 struct Loop {
     /// Datagrams carry the virtio-net header (offloads on).
     offload: bool,
+    /// Frames travel through shared rings; the socket only kicks.
+    rings: Option<rings::Rings>,
     poll: Poll,
     socket: mio::net::UnixDatagram,
     doorbell: Arc<WakerDoorbell>,
@@ -85,7 +89,8 @@ impl Loop {
     fn run(mut self) {
         let mut events = Events::with_capacity(16);
         loop {
-            if let Err(e) = self.poll.poll(&mut events, None) {
+            let timeout = (!self.may_sleep()).then_some(std::time::Duration::ZERO);
+            if let Err(e) = self.poll.poll(&mut events, timeout) {
                 if e.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
@@ -106,6 +111,14 @@ impl Loop {
                 return;
             }
             if self.ctx.is_none() {
+                continue;
+            }
+            if self.rings.is_some() {
+                if self.readable {
+                    self.drain_kicks();
+                }
+                self.transmit_rings();
+                self.receive_rings();
                 continue;
             }
             if bits & (1 << TX) != 0 || writable {
@@ -363,9 +376,16 @@ pub struct Net {
 
 impl Net {
     /// A NIC with `mac` whose frames travel over `socket` (a connected
-    /// `SOCK_DGRAM` unix socket, one frame per datagram). `offload`: the
-    /// peer reads and writes the virtio-net header with every frame.
-    pub fn new(mac: [u8; 6], socket: UnixDatagram, offload: bool) -> io::Result<Self> {
+    /// `SOCK_DGRAM` unix socket, one frame per datagram), or through the
+    /// shared rings in `rings` with the socket carrying only kicks.
+    /// `offload`: the peer reads and writes the virtio-net header with
+    /// every frame.
+    pub fn new(
+        mac: [u8; 6],
+        socket: UnixDatagram,
+        offload: bool,
+        rings: Option<&Arc<Region>>,
+    ) -> io::Result<Self> {
         size_buffers(&socket)?;
         socket.set_nonblocking(true)?;
         let poll = Poll::new()?;
@@ -376,6 +396,7 @@ impl Net {
         let (ctrl, rx) = mpsc::channel();
         let event_loop = Loop {
             offload,
+            rings: rings.map(rings::Rings::new),
             poll,
             socket,
             doorbell: Arc::clone(&doorbell),
