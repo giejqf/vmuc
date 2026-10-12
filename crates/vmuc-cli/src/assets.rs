@@ -15,6 +15,8 @@ pub const KERNEL_ENV: &str = "VMUC_KERNEL";
 pub const AGENT_ENV: &str = "VMUC_AGENT";
 /// The vmnet helper, when not at its default root-owned home.
 pub const VMNET_HELPER_ENV: &str = "VMUC_VMNET_HELPER";
+/// Where `vmuc sudoers` tells the user to put the rule.
+pub const SUDOERS_FILE: &str = "/etc/sudoers.d/vmuc";
 /// Extra kernel parameters appended at boot (experiments and benchmarks).
 pub const CMDLINE_ENV: &str = "VMUC_KERNEL_CMDLINE";
 
@@ -111,9 +113,104 @@ pub fn agent() -> anyhow::Result<PathBuf> {
     )
 }
 
+/// What this install has of the pieces an instance needs, for `vmuc info`.
+#[derive(Debug)]
+pub struct Inventory {
+    pub kernel: Result<PathBuf, String>,
+    pub agent: Result<PathBuf, String>,
+    pub helper: PathBuf,
+    /// Why networking will be off, or `None` when the helper is installed
+    /// root-owned where sudo may run it.
+    pub helper_problem: Option<String>,
+    /// The sudoers rule file exists (it is readable only by root).
+    pub sudoers_rule: bool,
+}
+
+impl Inventory {
+    pub fn collect() -> Self {
+        let helper = vmnet_helper();
+        Self {
+            kernel: kernel().map_err(|e| e.to_string()),
+            agent: agent().map_err(|e| e.to_string()),
+            helper_problem: vmuc_net::launch::check_root_owned(&helper)
+                .err()
+                .map(|e| e.to_string()),
+            helper,
+            sudoers_rule: Path::new(SUDOERS_FILE).exists(),
+        }
+    }
+
+    /// Instances can start (networking is optional).
+    pub fn ready(&self) -> bool {
+        self.kernel.is_ok() && self.agent.is_ok()
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let path = |r: &Result<PathBuf, String>| match r {
+            Ok(p) => serde_json::json!({ "path": p }),
+            Err(e) => serde_json::json!({ "error": e }),
+        };
+        serde_json::json!({
+            "kernel": path(&self.kernel),
+            "agent": path(&self.agent),
+            "vmnetHelper": { "path": self.helper, "problem": self.helper_problem },
+            "sudoersRule": self.sudoers_rule,
+            "ready": self.ready(),
+        })
+    }
+}
+
+impl std::fmt::Display for Inventory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let show = |r: &Result<PathBuf, String>| match r {
+            Ok(p) => p.display().to_string(),
+            Err(e) => format!("missing: {e}"),
+        };
+        writeln!(f, "kernel:      {}", show(&self.kernel))?;
+        writeln!(f, "agent:       {}", show(&self.agent))?;
+        match (&self.helper_problem, self.sudoers_rule) {
+            (None, true) => writeln!(f, "networking:  vmnet helper {}", self.helper.display())?,
+            (None, false) => writeln!(
+                f,
+                "networking:  off (helper installed, no {SUDOERS_FILE}; see `vmuc sudoers`)"
+            )?,
+            (Some(why), _) => writeln!(f, "networking:  off ({why})")?,
+        }
+        writeln!(
+            f,
+            "ready:       {}",
+            if self.ready() { "yes" } else { "no" }
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_reports_what_is_missing() {
+        let inv = Inventory {
+            kernel: Ok("/k/Image".into()),
+            agent: Err("no guest agent found".into()),
+            helper: "/usr/local/libexec/vmuc/vmuc-vmnet-helper".into(),
+            helper_problem: Some("it does not exist".into()),
+            sudoers_rule: false,
+        };
+        assert!(!inv.ready());
+        let text = inv.to_string();
+        assert!(text.contains("kernel:      /k/Image"), "{text}");
+        assert!(
+            text.contains("agent:       missing: no guest agent found"),
+            "{text}"
+        );
+        assert!(
+            text.contains("networking:  off (it does not exist)"),
+            "{text}"
+        );
+        assert_eq!(inv.to_json()["agent"]["error"], "no guest agent found");
+        assert_eq!(inv.to_json()["ready"], false);
+    }
 
     #[test]
     fn dev_tree_and_prefix_candidates() {

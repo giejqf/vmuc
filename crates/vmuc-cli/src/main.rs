@@ -214,10 +214,14 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Info { json } => {
             let info = host::HostInfo::collect();
+            let inventory = assets::Inventory::collect();
             if json {
-                println!("{}", serde_json::to_string_pretty(&info.to_json())?);
+                let mut v = info.to_json();
+                v["install"] = inventory.to_json();
+                v["home"] = serde_json::json!(home.root());
+                println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
-                print!("{info}");
+                print!("{info}{inventory}");
                 println!("home:        {}", home.root().display());
             }
         }
@@ -408,9 +412,10 @@ fn sudoers_text(helper: &std::path::Path) -> String {
          # where only root can change it, then this rule:\n\
          #   sudo install -d -o root -g wheel -m 0755 {dir}\n\
          #   sudo install -o root -g wheel -m 0755 {built} {helper}\n\
-         #   vmuc sudoers | sudo tee /etc/sudoers.d/vmuc\n{}",
+         #   vmuc sudoers | sudo tee {sudoers}\n{}",
         vmuc_net::launch::sudoers_rule(helper),
         helper = helper.display(),
+        sudoers = assets::SUDOERS_FILE,
     )
 }
 
