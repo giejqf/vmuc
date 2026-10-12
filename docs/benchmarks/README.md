@@ -13,7 +13,7 @@ vCPUs unless noted.
 | Host footprint, idle guest after first reclaim | < 350 MiB | 467 MiB | 802 MiB idle; 2749 MiB once the guest has used and freed 2 GiB | not met (but well under VZ) | [mem-reclaim](mem-reclaim.md) |
 | Freed guest memory back to the host | ≥ 90 % within 10 s | 77–100 % of 2 GiB within 10 s (90 % at 10.4 s in the latest run) | 0 %, even after the guest drops caches | borderline | [mem-reclaim](mem-reclaim.md) |
 | Reclaim-induced vCPU stall | < 5 ms | +13 µs worst gap on an unrelated vCPU at saturation | — | met | [reclaim stall](../experiments/2026-10-11-reclaim-stall.md), `crates/vmuc-hv/tests/stall.rs` |
-| Net single flow host↔guest | > 10 Gbit/s | 8.3 host→guest, 4.2 guest→host (no offload yet) | 71.9 / 108.1 (VZ NAT) | not met; the TSO path needs the updated helper installed | [net-iperf](net-iperf.md) |
+| Net single flow host↔guest | > 10 Gbit/s | 52.7 host→guest, 63.6 guest→host (vmnet with TSO, macOS 15.4+) | 71.9 / 108.1 (VZ NAT) | met; 59-73 % of VZ, see below | [net-iperf](net-iperf.md) |
 | vsock RPC p50 | < 0.3 ms | 0.138 ms (p99 0.239 ms), new connection per call | — | met | [vsock-rpc](vsock-rpc.md) |
 | virtiofs | ≥ VZ virtiofs on the same host | 3.2 GB/s write, 3.8 GB/s cold read, open+close 78 µs | 2.7 GB/s write, 4.5 GB/s cold read, open+close 72 µs | mixed: ahead on writes and cold stat (8×), behind on cold reads, create, unlink | [fs](fs.md) |
 
@@ -25,7 +25,7 @@ each page.
 Re-run one with `make bench-local NAME=<probe>` on the Mac (or
 `make bench NAME=` from the Linux box); each appends its row.
 
-## Why the misses miss
+## Why the misses and the gaps
 
 - **Footprint.** After reclaim an idle Ubuntu guest keeps ~490 MiB on
   the host: about 240 MiB is Ubuntu's own working set and about 95 MiB
@@ -33,11 +33,11 @@ Re-run one with `make bench-local NAME=<probe>` on the Mac (or
   ([M5 log](../logs/2026-10-11-m5-memory.md)). Closing the gap is a
   snapd-free template and 16 KiB guest pages (experiment E3) more than
   VMM work.
-- **Network.** VZ's virtio-net passes 64 KiB TCP segments with partial
-  checksums; vmuc's guest still segments and checksums every 1500-byte
-  frame. vmnet speaks virtio-net headers from macOS 15.4, and the helper
-  and NIC now use them for TSO both ways, but the installed root helper
-  predates that and has to be reinstalled before it can be measured.
+- **Network against VZ.** VZ's device hands frames to the host in one
+  hop through an entitlement vmuc cannot hold; vmuc's go through the root
+  helper (two extra copies, one relay thread per direction at 88-100 %
+  of a core) and use ~30 % more CPU per bit. Details and what would
+  narrow it: [network log](../logs/2026-10-12-m6-network-on-vmnet.md).
 - **Memory before reclaim.** 20 s after boot vmuc's guest holds 1352 MiB
   against VZ's 802 MiB, mostly page cache from boot; free page reporting
   only returns memory the guest frees, so it comes back on `vmuc reclaim`
