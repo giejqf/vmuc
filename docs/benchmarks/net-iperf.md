@@ -13,3 +13,4 @@ Target: > 10 Gbit/s single flow.
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | Lima 2.2.1 vz | VZ NAT | 71.9 | 108.1 | 80.3 | 138.3 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | vmuc c107432 | vmnet shared, no offload | 8.3 | 4.2 | 8.3 | 4.4 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | vmuc fa649f8 | vmnet shared, TSO | 52.7 | 63.6 | 49.3 | 77.8 |
+| 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | vmuc 50537e0 | vmnet shared, TSO, rings | 87.8 | 76.5 | 100.5 | 110.5 |

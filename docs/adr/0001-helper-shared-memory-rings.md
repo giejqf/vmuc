@@ -1,6 +1,7 @@
 # ADR 0001 — Frames between the VMM and the vmnet helper travel through shared-memory rings
 
-**Status:** accepted, 2026-10-12.
+**Status:** accepted, 2026-10-12; measured in
+[the rings experiment](../experiments/2026-10-12-helper-rings.md).
 
 ## Context
 
@@ -19,8 +20,9 @@ socket, socket → VMM, VMM → guest), with a send and a recv per frame.
 
 The VMM creates one shared memory region (`shm_open`, unlinked at once,
 `MAP_SHARED`), passes its fd to the helper over the socketpair
-(`SCM_RIGHTS`) once the helper's hello says it can use rings, and both map
-it. It holds two single-producer, single-consumer byte rings of 4 MiB:
+(`SCM_RIGHTS`) once the helper's hello names the same ring layout version
+(`ring_layout`), and both map it. It holds two single-producer, single-consumer byte rings of 4 MiB, each
+behind a 16 KiB control page:
 VMM → helper and helper → VMM. A record is an 8-byte header (frame
 length, distance to the next record) followed by the frame, virtio-net
 header included when offloads are on; records never wrap, a marker sends
@@ -37,8 +39,9 @@ the consumer back to the start.
   the flag after publishing sends a one-byte kick. A producer that finds
   the ring full sets its own flag and the consumer kicks it when it frees
   space. Under load nobody sleeps and no kick is sent.
-- A helper that does not offer rings (installed before this change) keeps
-  the datagram path; the VMM keeps both.
+- A helper whose hello names no or another layout (installed before this
+  change, or before a layout change) keeps the datagram path; the VMM
+  keeps both, and so does the helper for a VMM that sends frames.
 
 ## Consequences
 
@@ -53,6 +56,9 @@ the consumer back to the start.
   for reclaim.
 - 8 MiB plus a page of shared memory per instance with a NIC, billed to
   the VMM once touched; `vmuc stat`'s host footprint includes it.
-- Changing the helper means users reinstall it (`vmuc sudoers`).
+- Changing the helper means users reinstall it (`vmuc sudoers`); a
+  changed layout needs a new `ring::LAYOUT`.
+- The VMM reports a helper that exits while the VM runs, with what it
+  printed: after the hello nothing else reads its stderr.
 - Multi-queue virtio-net (several ring pairs and threads) remains the
   way to scale parallel flows; this ADR is about the per-flow ceiling.

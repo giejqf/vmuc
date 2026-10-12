@@ -35,18 +35,35 @@ export VMUC_HOME=$home
 ip=$("$vmuc" shell netb -- 'ip -4 -o addr show eth0' </dev/null | awk '{print $4}' | cut -d/ -f1)
 tso=$("$vmuc" shell netb -- 'ethtool -k eth0' </dev/null | awk '/^tcp-segmentation-offload:/ {print $2}')
 
-python3 -I - "$root" "$ip" "$tso" "$(git -C "$root" rev-parse --short HEAD)" <<'PY'
+# The VMM maps the 8 MiB ring region only when the helper relays through it.
+vmm=$(cat "$home/netb/vmm.pid")
+# grep -c reads everything: with pipefail, grep -q's early exit would
+# SIGPIPE vmmap and fail the pipeline.
+found=$(vmmap "$vmm" 2>/dev/null | grep -c "^shared memory .*\[ *8224K" || true)
+rings=$([ "${found:-0}" -gt 0 ] && echo yes || echo no)
+
+python3 -I - "$root" "$ip" "$tso" "$(git -C "$root" rev-parse --short HEAD)" "$rings" <<'PY'
 import datetime, json, subprocess, sys, time
-root, ip, tso, rev = sys.argv[1:]
+root, ip, tso, rev, rings = sys.argv[1:]
 rates = []
 for args in ([], ["-R"], ["-P", "4"], ["-R", "-P", "4"]):
-    time.sleep(1)  # iperf3 -s takes one client at a time
-    out = subprocess.run(["iperf3", "-c", ip, "-t", "8", "-J", *args],
-                         check=True, capture_output=True, text=True).stdout
-    rates.append(json.loads(out)["end"]["sum_received"]["bits_per_second"] / 1e9)
+    # iperf3 -s takes one client at a time and may still be finishing the
+    # last test: retry after a pause.
+    for attempt in range(3):
+        time.sleep(1 + 2 * attempt)
+        run = subprocess.run(["iperf3", "-c", ip, "-t", "8", "-J", *args],
+                             capture_output=True, text=True)
+        try:
+            rates.append(json.loads(run.stdout)["end"]["sum_received"]["bits_per_second"] / 1e9)
+            break
+        except (ValueError, KeyError):
+            continue
+    else:
+        sys.exit(f"iperf3 {' '.join(args)} failed three times: {run.stderr.strip()}")
 mac = subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout.strip()
 chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()
 net = "vmnet shared, TSO" if tso == "on" else "vmnet shared, no offload"
+net += ", rings" if rings == "yes" else ", socket"
 row = (f"| {datetime.date.today()} | {chip}, macOS {mac} | vmuc {rev} | {net} | "
        + " | ".join(f"{r:.1f}" for r in rates) + " |")
 with open(f"{root}/docs/benchmarks/net-iperf.md", "a") as f:
