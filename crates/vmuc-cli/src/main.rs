@@ -403,25 +403,29 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Install instructions (as comments) followed by the sudoers rule, so
-/// `vmuc sudoers | sudo tee /etc/sudoers.d/vmuc` installs a valid file.
+/// the output is itself a valid sudoers file. The rule is checked with
+/// visudo before it goes in: a broken file in /etc/sudoers.d breaks sudo.
 fn sudoers_text(helper: &std::path::Path) -> String {
-    let built = std::env::current_exe()
-        .ok()
+    let exe = std::env::current_exe().ok();
+    let built = exe
+        .as_ref()
         .and_then(|e| e.parent().map(|d| d.join("vmuc-vmnet-helper")))
         .filter(|p| p.is_file())
         .map_or_else(
             || "<path to vmuc-vmnet-helper>".to_owned(),
             |p| p.display().to_string(),
         );
+    let exe = exe.map_or_else(|| "vmuc".to_owned(), |e| e.display().to_string());
     let dir = helper
         .parent()
         .map_or_else(String::new, |d| d.display().to_string());
     format!(
         "# vmuc networking runs vmnet through a small root helper. Install it\n\
-         # where only root can change it, then this rule:\n\
+         # where only root can change it, then this rule, checked first:\n\
          #   sudo install -d -o root -g wheel -m 0755 {dir}\n\
          #   sudo install -o root -g wheel -m 0755 {built} {helper}\n\
-         #   vmuc sudoers | sudo tee {sudoers}\n{}",
+         #   {exe} sudoers > /tmp/vmuc.sudoers\n\
+         #   sudo visudo -cf /tmp/vmuc.sudoers && sudo install -o root -g wheel -m 0440 /tmp/vmuc.sudoers {sudoers}\n{}",
         vmuc_net::launch::sudoers_rule(helper),
         helper = helper.display(),
         sudoers = assets::SUDOERS_FILE,
