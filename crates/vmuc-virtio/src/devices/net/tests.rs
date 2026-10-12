@@ -17,18 +17,24 @@ struct Rig {
 }
 
 fn rig(mergeable: bool) -> Rig {
+    rig_with(false, if mergeable { F_MRG_RXBUF } else { 0 })
+}
+
+/// `offload`: the peer speaks virtio-net headers; `negotiated`: the
+/// driver's feature bits besides EVENT_IDX.
+fn rig_with(offload: bool, negotiated: u64) -> Rig {
     let (ours, peer) = UnixDatagram::pair().unwrap();
     peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    size_buffers(&peer).unwrap();
     let mut ds = Driver::many(2, 16, true);
     let tx = ds.pop().unwrap();
     let rx = ds.pop().unwrap();
-    let mut net = Net::new(MAC, ours).unwrap();
-    let features = features::RING_EVENT_IDX | if mergeable { F_MRG_RXBUF } else { 0 };
+    let mut net = Net::new(MAC, ours, offload).unwrap();
     net.activate(Activation {
         mem: rx.mem.clone(),
         queues: vec![rx.queue.clone(), tx.queue.clone()],
         irq: Arc::new(IrqStatus::new(Arc::new(TestIrq::default()))),
-        features,
+        features: features::RING_EVENT_IDX | negotiated,
     })
     .unwrap();
     Rig { rx, tx, net, peer }
@@ -118,4 +124,68 @@ fn large_frames_merge_across_buffers() {
     r.rx.mem.read(b, &mut got[1024..]).unwrap();
     assert_eq!(u16::from_le_bytes([got[10], got[11]]), 2, "num_buffers");
     assert_eq!(&got[12..12 + f.len()], f.as_slice());
+}
+
+/// A virtio-net header: flags, gso_type, then gso_size 1448.
+fn hdr(flags: u8, gso: u8) -> [u8; 12] {
+    let mut h = [0u8; 12];
+    h[0] = flags;
+    h[1] = gso;
+    h[4..6].copy_from_slice(&1448u16.to_le_bytes());
+    h
+}
+
+#[test]
+fn offloads_are_offered_only_when_the_peer_speaks_headers() {
+    assert_eq!(rig(true).net.features() & offload::OFFERED, 0);
+    let r = rig_with(true, F_MRG_RXBUF);
+    assert_eq!(r.net.features() & offload::OFFERED, offload::OFFERED);
+}
+
+#[test]
+fn with_offloads_transmit_keeps_the_header() {
+    let mut r = rig_with(true, F_MRG_RXBUF | offload::OFFERED);
+    let h = hdr(1, 1); // NEEDS_CSUM, TCPv4 GSO
+    let sent = frame(9000);
+    let hb = r.tx.buffer(&h, 12);
+    let fb = r.tx.buffer(&sent, 9000);
+    r.tx.post(&[(hb, 12, false), (fb, 9000, false)]);
+    r.net.doorbell().ring(1);
+    let mut got = vec![0u8; 16384];
+    let len = r.peer.recv(&mut got).unwrap();
+    assert_eq!(len, 12 + sent.len());
+    assert_eq!(&got[..12], &h);
+    assert_eq!(&got[12..len], sent.as_slice());
+}
+
+#[test]
+fn with_offloads_receive_fits_frames_to_the_driver() {
+    // A driver without TSO: the GSO frame is dropped, the plain one kept.
+    let mut r = rig_with(true, F_MRG_RXBUF | offload::F_GUEST_CSUM);
+    let buf = post_rx(&mut r.rx, 4096);
+    let mut gso = hdr(0, 1).to_vec();
+    gso.extend(frame(3000));
+    r.peer.send(&gso).unwrap();
+    let mut plain = hdr(0, 0).to_vec();
+    plain.extend(frame(100));
+    r.peer.send(&plain).unwrap();
+    r.net.doorbell().ring(0);
+    wait_used(&r.rx, 1);
+    let (_, len) = r.rx.used()[0];
+    assert_eq!(len as usize, plain.len());
+    let mut got = vec![0u8; len as usize];
+    r.rx.mem.read(buf, &mut got).unwrap();
+    assert_eq!(u16::from_le_bytes([got[10], got[11]]), 1, "num_buffers set");
+    assert_eq!(&got[12..], &plain[12..]);
+
+    // With TSO the 3000-byte segment arrives whole, header intact.
+    let mut r = rig_with(true, F_MRG_RXBUF | offload::OFFERED);
+    let buf = post_rx(&mut r.rx, 4096);
+    r.peer.send(&gso).unwrap();
+    r.net.doorbell().ring(0);
+    wait_used(&r.rx, 1);
+    let mut got = vec![0u8; gso.len()];
+    r.rx.mem.read(buf, &mut got).unwrap();
+    assert_eq!(&got[..10], &gso[..10]);
+    assert_eq!(&got[12..], &gso[12..]);
 }

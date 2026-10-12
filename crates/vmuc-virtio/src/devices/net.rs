@@ -8,8 +8,12 @@
 //! virtio-net header skipped; a full socket keeps the chain for the next
 //! writable event. Receive copies each datagram once into the guest's
 //! buffers (several with mergeable receive buffers); while the guest has
-//! posted none, frames wait in the kernel socket. No offloads: frames go
-//! to a real bridge, so checksums are the guest's job.
+//! posted none, frames wait in the kernel socket.
+//!
+//! When the peer speaks virtio-net headers too (vmnet on macOS 15.4+),
+//! each datagram carries the 12-byte header and the device offers
+//! checksum and TCP segmentation offload both ways (see `offload`).
+//! Otherwise datagrams are bare frames and checksums are the guest's job.
 
 use std::collections::VecDeque;
 use std::io;
@@ -28,6 +32,8 @@ use crate::device::{
 use crate::devices::Segments;
 use crate::queue::DescChain;
 
+mod offload;
+
 const F_MTU: u64 = 1 << 3;
 const F_MAC: u64 = 1 << 5;
 const F_MRG_RXBUF: u64 = 1 << 15;
@@ -40,6 +46,10 @@ const HDR_LEN: usize = 12;
 const MTU: u16 = 1500;
 /// Largest frame accepted from the socket (jumbo-safe).
 const MAX_FRAME: usize = 65_550;
+/// Socket buffer bytes per direction. A unix datagram socket holds 4 KiB
+/// on macOS by default, two frames, and caps a datagram at 2 KiB, too
+/// small for bursts or for 64 KiB offload segments.
+const SOCKET_BUFFER: libc::c_int = 4 << 20;
 const WAKER: Token = Token(0);
 const SOCKET: Token = Token(1);
 const CONTROL: u32 = 1 << 31;
@@ -51,6 +61,8 @@ enum Ctrl {
 }
 
 struct Loop {
+    /// Datagrams carry the virtio-net header (offloads on).
+    offload: bool,
     poll: Poll,
     socket: mio::net::UnixDatagram,
     doorbell: Arc<WakerDoorbell>,
@@ -122,7 +134,12 @@ impl Loop {
     /// Sends a chain's frame (header skipped) straight from guest memory.
     /// `Ok(false)` when the socket is full.
     fn send_chain(&self, ctx: &WorkerCtx, chain: &DescChain) -> io::Result<bool> {
-        let (_, frame) = Segments::readable(chain).split_at(HDR_LEN as u64);
+        let readable = Segments::readable(chain);
+        let frame = if self.offload {
+            readable
+        } else {
+            readable.split_at(HDR_LEN as u64).1
+        };
         let mut iov = frame.iovecs(&ctx.mem).map_err(io::Error::other)?;
         // SAFETY: a zeroed msghdr is valid; we fill the iovec fields.
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -203,7 +220,9 @@ impl Loop {
                 break;
             };
             self.frame.resize(HDR_LEN + MAX_FRAME, 0);
-            let n = match self.socket.recv(&mut self.frame[HDR_LEN..]) {
+            // With offloads the datagram brings its own header.
+            let skip = if self.offload { 0 } else { HDR_LEN };
+            let n = match self.socket.recv(&mut self.frame[skip..]) {
                 Ok(n) => n,
                 Err(e) => {
                     if e.kind() == io::ErrorKind::WouldBlock {
@@ -215,8 +234,18 @@ impl Loop {
                     break;
                 }
             };
-            let total = HDR_LEN + n;
-            self.frame[..HDR_LEN].fill(0);
+            let total = skip + n;
+            if self.offload {
+                if let offload::Fit::Drop(why) =
+                    offload::fit_for_guest(&mut self.frame[..total], ctx.features)
+                {
+                    tracing::debug!(len = n, "virtio-net: dropped a frame with {why}");
+                    self.rx_spare.push_front(first);
+                    continue;
+                }
+            } else {
+                self.frame[..HDR_LEN].fill(0);
+            }
             // Spread the frame over as many chains as it needs.
             let mut room = Segments::writable(&first).len();
             let mut chains = vec![first];
@@ -263,6 +292,7 @@ impl Loop {
 }
 
 pub struct Net {
+    offload: bool,
     config: [u8; 12],
     doorbell: Arc<WakerDoorbell>,
     ctrl: Sender<Ctrl>,
@@ -271,8 +301,10 @@ pub struct Net {
 
 impl Net {
     /// A NIC with `mac` whose frames travel over `socket` (a connected
-    /// `SOCK_DGRAM` unix socket, one frame per datagram).
-    pub fn new(mac: [u8; 6], socket: UnixDatagram) -> io::Result<Self> {
+    /// `SOCK_DGRAM` unix socket, one frame per datagram). `offload`: the
+    /// peer reads and writes the virtio-net header with every frame.
+    pub fn new(mac: [u8; 6], socket: UnixDatagram, offload: bool) -> io::Result<Self> {
+        size_buffers(&socket)?;
         socket.set_nonblocking(true)?;
         let poll = Poll::new()?;
         let doorbell = Arc::new(WakerDoorbell::new(Waker::new(poll.registry(), WAKER)?, 2));
@@ -281,6 +313,7 @@ impl Net {
             .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
         let (ctrl, rx) = mpsc::channel();
         let event_loop = Loop {
+            offload,
             poll,
             socket,
             doorbell: Arc::clone(&doorbell),
@@ -300,6 +333,7 @@ impl Net {
         config[8..10].copy_from_slice(&1u16.to_le_bytes()); // one queue pair
         config[10..12].copy_from_slice(&MTU.to_le_bytes());
         Ok(Self {
+            offload,
             config,
             doorbell,
             ctrl,
@@ -334,6 +368,7 @@ impl VirtioDevice for Net {
             | F_STATUS
             | F_MRG_RXBUF
             | F_MTU
+            | if self.offload { offload::OFFERED } else { 0 }
     }
     fn queue_max_sizes(&self) -> Vec<u16> {
         vec![256, 256]
@@ -368,6 +403,27 @@ impl VirtioDevice for Net {
     fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.doorbell.clone()
     }
+}
+
+/// Gives the device's end of the socket room for bursts and large frames.
+fn size_buffers(socket: &UnixDatagram) -> io::Result<()> {
+    let bytes = SOCKET_BUFFER;
+    for opt in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+        // SAFETY: a valid socket and a c_int option value.
+        let rc = unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                opt,
+                (&raw const bytes).cast(),
+                size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// `0a:56:4d:d2:a4:d4` → bytes.

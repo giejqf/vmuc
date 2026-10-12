@@ -39,7 +39,7 @@ pub fn attach(b: &mut VmBuilder, resolved: &ResolvedConfig, events: &EventLog) -
         Err(e) => return warn(format!("networking unavailable: {e}")),
     };
     tracing::info!(?launched.hello, "vmnet interface up");
-    match Net::new(mac, launched.socket)
+    match Net::new(mac, launched.socket, launched.hello.virtio_header)
         .map_err(|e| e.to_string())
         .and_then(|net| {
             b.add_virtio(Box::new(net))
