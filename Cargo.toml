@@ -26,6 +26,7 @@ rust-version = "1.97"
 # Non-VM concerns only. The allowed list lives in docs/plan.md.
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 libc = "0.2"
 mio = { version = "1", features = ["os-poll", "net", "os-ext"] }
 serde = { version = "1", features = ["derive"] }

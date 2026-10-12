@@ -411,6 +411,72 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
     })
 }
 
+/// `vmuc edit`: the instance's config in `$VISUAL`/`$EDITOR` (else `vi`),
+/// checked before it replaces the original. An edit that does not check
+/// out is kept beside it to fix.
+pub fn edit(home: &VmucHome, name: &str) -> anyhow::Result<()> {
+    let inst = Instance::open(home, name)?;
+    let path = inst.dir.join(files::CONFIG);
+    let original = fs::read_to_string(&path).with_context(|| path.display().to_string())?;
+    let draft = inst.dir.join("vmuc.yaml.edit");
+    fs::write(&draft, &original)?;
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".into());
+    // Through sh, so `code --wait` and similar work.
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(&draft)
+        .status()
+        .with_context(|| format!("running {editor}"))?;
+    if !status.success() {
+        let _ = fs::remove_file(&draft);
+        bail!(
+            "{editor} exited with {status}; {} unchanged",
+            path.display()
+        );
+    }
+    let edited = fs::read_to_string(&draft)?;
+    match apply_edit(home, &inst, &original, &edited) {
+        Ok(changed) => {
+            let _ = fs::remove_file(&draft);
+            if !changed {
+                eprintln!("no changes");
+            } else if crate::state::running_pid(&inst.dir).is_some() {
+                eprintln!("{name} is running; the change applies at its next start");
+            }
+            Ok(())
+        }
+        Err(e) => bail!(
+            "{e:#}\nthe edit is kept in {}; {} is unchanged",
+            draft.display(),
+            path.display()
+        ),
+    }
+}
+
+/// Checks an edited config as `start` would and puts it in place.
+/// `Ok(false)` when nothing changed.
+fn apply_edit(
+    home: &VmucHome,
+    inst: &Instance,
+    original: &str,
+    edited: &str,
+) -> anyhow::Result<bool> {
+    if edited == original {
+        return Ok(false);
+    }
+    let path = inst.dir.join(files::CONFIG);
+    let cfg = InstanceConfig::from_yaml(edited, &path.display().to_string())?;
+    resolve(home, &inst.name, &cfg)?;
+    let tmp = inst.dir.join("vmuc.yaml.tmp");
+    fs::write(&tmp, edited)?;
+    fs::rename(&tmp, &path)?;
+    Ok(true)
+}
+
 pub fn delete(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     let dir = home.instance_dir(name)?;
     if !dir.exists() {
@@ -488,6 +554,36 @@ pub fn list(home: &VmucHome) -> anyhow::Result<Vec<ListRow>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edits_are_checked_before_they_replace_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = VmucHome::new(dir.path());
+        let inst_dir = dir.path().join("dev");
+        fs::create_dir_all(&inst_dir).unwrap();
+        let original = "images:\n- location: https://example.com/x.img\ncpus: 2\n";
+        fs::write(inst_dir.join(files::CONFIG), original).unwrap();
+        let inst = Instance {
+            name: "dev".into(),
+            dir: inst_dir.clone(),
+        };
+        assert!(
+            !apply_edit(&home, &inst, original, original).unwrap(),
+            "unchanged"
+        );
+        let bad = original.replace("cpus: 2", "cpuz: 4");
+        assert!(apply_edit(&home, &inst, original, &bad).is_err());
+        assert_eq!(
+            fs::read_to_string(inst_dir.join(files::CONFIG)).unwrap(),
+            original
+        );
+        let good = original.replace("cpus: 2", "cpus: 4");
+        assert!(apply_edit(&home, &inst, original, &good).unwrap());
+        assert_eq!(
+            fs::read_to_string(inst_dir.join(files::CONFIG)).unwrap(),
+            good
+        );
+    }
 
     #[test]
     fn default_name_from_locator() {

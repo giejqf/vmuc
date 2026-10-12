@@ -56,6 +56,36 @@ impl DirLock {
     }
 }
 
+impl DirLock {
+    /// As [`DirLock::acquire`], but `None` instead of waiting when another
+    /// process holds the lock.
+    pub fn try_acquire(path: &Path) -> io::Result<Option<Self>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        // SAFETY: flock on a descriptor we own; no memory is passed.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let e = io::Error::last_os_error();
+            return if e.kind() == io::ErrorKind::WouldBlock {
+                Ok(None)
+            } else {
+                Err(e)
+            };
+        }
+        Ok(Some(Self { _file: file }))
+    }
+}
+
+/// One entry [`Cache::prune`] removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pruned {
+    pub url: String,
+    pub bytes: u64,
+}
+
 impl std::fmt::Debug for DirLock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("DirLock")
@@ -100,6 +130,38 @@ impl Cache {
     /// The root directory.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Removes every download nobody is fetching right now (they can all be
+    /// fetched again; instances keep their own disks). Returns what went.
+    pub fn prune(&self) -> Result<Vec<Pruned>> {
+        let dir = self.root.join(ENTRY_SUBDIR);
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut pruned = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(_lock) = DirLock::try_acquire(&path.join(LOCK))? else {
+                continue; // a download in progress
+            };
+            let url = fs::read_to_string(path.join(URL_FILE)).unwrap_or_default();
+            let bytes = fs::read_dir(&path)?
+                .filter_map(|f| f.ok()?.metadata().ok())
+                .map(|m| m.len())
+                .sum();
+            fs::remove_dir_all(&path)?;
+            pruned.push(Pruned {
+                url: url.trim().to_owned(),
+                bytes,
+            });
+        }
+        Ok(pruned)
     }
 
     /// The entry directory for `url`.
@@ -386,6 +448,28 @@ mod tests {
         } else {
             assert!(d.ends_with("vmuc"));
         }
+    }
+
+    #[test]
+    fn prune_removes_entries_but_not_one_being_downloaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::new(tmp.path().join("cache"));
+        assert!(cache.prune().unwrap().is_empty(), "nothing cached yet");
+        let (a, b) = (tmp.path().join("a.img"), tmp.path().join("b.img"));
+        fs::write(&a, payload()).unwrap();
+        fs::write(&b, b"small").unwrap();
+        cache.fetch(&file_url(&a), None, |_, _| {}).unwrap();
+        cache.fetch(&file_url(&b), None, |_, _| {}).unwrap();
+        // Another process downloading `b` holds its lock.
+        let busy = DirLock::acquire(&cache.entry_dir(&file_url(&b)).join(LOCK)).unwrap();
+        let pruned = cache.prune().unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].url, file_url(&a));
+        assert!(pruned[0].bytes >= payload().len() as u64);
+        assert!(!cache.entry_dir(&file_url(&a)).exists());
+        assert!(cache.entry_dir(&file_url(&b)).exists());
+        drop(busy);
+        assert_eq!(cache.prune().unwrap().len(), 1);
     }
 
     #[test]

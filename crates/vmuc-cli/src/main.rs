@@ -8,6 +8,7 @@ mod agent_client;
 mod assets;
 mod boot;
 mod control;
+mod copy;
 mod host;
 mod instance;
 mod keys;
@@ -114,6 +115,23 @@ enum Command {
     Reclaim { name: String },
     /// Watch and drive every instance in a terminal UI.
     Tui,
+    /// Copy files to or from an instance over ssh: `NAME:PATH` is a path
+    /// in the instance, anything else is local.
+    Copy {
+        /// Copy directories recursively.
+        #[arg(short, long)]
+        recursive: bool,
+        /// Sources, then the destination.
+        #[arg(required = true, num_args = 2..)]
+        paths: Vec<String>,
+    },
+    /// Edit an instance's configuration (checked before it is saved).
+    Edit { name: String },
+    /// Remove downloaded images from the cache (instances keep their own
+    /// disks; a later create downloads again).
+    Prune,
+    /// Print a shell completion script: `vmuc completion zsh > _vmuc`.
+    Completion { shell: clap_complete::Shell },
     /// Open a shell in an instance, or run a command there.
     Shell {
         name: String,
@@ -367,6 +385,19 @@ fn main() -> anyhow::Result<()> {
         } => lifecycle::shell(&home, &name, workdir.as_deref(), &command)?,
         Command::Stat { name, watch, json } => stat::run(&home, &name, watch, json)?,
         Command::Tui => tui::run(&home)?,
+        Command::Copy { recursive, paths } => copy::run(&home, recursive, &paths)?,
+        Command::Edit { name } => instance::edit(&home, &name)?,
+        Command::Prune => {
+            let pruned = vmuc_image::Cache::open_default()?.prune()?;
+            for p in &pruned {
+                println!("removed {} ({})", p.url, stat::human(p.bytes));
+            }
+            let total: u64 = pruned.iter().map(|p| p.bytes).sum();
+            println!("freed {}", stat::human(total));
+        }
+        Command::Completion { shell } => {
+            clap_complete::generate(shell, &mut public_command(), "vmuc", &mut std::io::stdout());
+        }
         Command::Sudoers { helper } => {
             let helper = helper.unwrap_or_else(assets::vmnet_helper);
             print!("{}", sudoers_text(&helper));
@@ -439,6 +470,19 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The command tree without the hidden internal subcommands, for
+/// completion scripts (clap_complete's bash and fish generators list
+/// hidden subcommands too).
+fn public_command() -> clap::Command {
+    use clap::CommandFactory;
+    let full = Cli::command();
+    clap::Command::new("vmuc")
+        .about(full.get_about().cloned().unwrap_or_default())
+        .version(env!("CARGO_PKG_VERSION"))
+        .args(full.get_arguments().filter(|a| !a.is_hide_set()).cloned())
+        .subcommands(full.get_subcommands().filter(|c| !c.is_hide_set()).cloned())
+}
+
 /// Install instructions (as comments) followed by the sudoers rule, so
 /// the output is itself a valid sudoers file. The rule is checked with
 /// visudo before it goes in: a broken file in /etc/sudoers.d breaks sudo.
@@ -495,6 +539,16 @@ fn installed_templates() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completions_leave_out_internal_commands() {
+        let names: Vec<String> = super::public_command()
+            .get_subcommands()
+            .map(|c| c.get_name().to_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "shell"));
+        assert!(names.iter().all(|n| !n.starts_with('_')), "{names:?}");
+    }
+
     #[test]
     fn bare_names_become_templates() {
         assert_eq!(super::normalize_locator("ubuntu"), "template:ubuntu");
