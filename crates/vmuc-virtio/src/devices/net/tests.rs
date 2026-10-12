@@ -189,3 +189,42 @@ fn with_offloads_receive_fits_frames_to_the_driver() {
     assert_eq!(&got[..10], &gso[..10]);
     assert_eq!(&got[12..], &gso[12..]);
 }
+
+#[test]
+fn a_frame_waits_for_enough_buffers_instead_of_dropping() {
+    let mut r = rig(true);
+    let a = post_rx(&mut r.rx, 1024);
+    let f = frame(1800);
+    r.peer.send(&f).unwrap();
+    r.net.doorbell().ring(0);
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        r.rx.mem.load_u16_acquire(r.rx.queue.used + 2).unwrap(),
+        0,
+        "one buffer is not enough: held, not delivered or dropped"
+    );
+    let b = post_rx(&mut r.rx, 1024);
+    r.net.doorbell().ring(0);
+    wait_used(&r.rx, 2);
+    let mut got = vec![0u8; 2048];
+    r.rx.mem.read(a, &mut got[..1024]).unwrap();
+    r.rx.mem.read(b, &mut got[1024..]).unwrap();
+    assert_eq!(u16::from_le_bytes([got[10], got[11]]), 2, "num_buffers");
+    assert_eq!(&got[12..12 + f.len()], f.as_slice());
+}
+
+#[test]
+fn without_mergeable_buffers_an_oversized_frame_is_dropped() {
+    let mut r = rig(false);
+    let buf = post_rx(&mut r.rx, 1024);
+    r.peer.send(&frame(1800)).unwrap();
+    let small = frame(500);
+    r.peer.send(&small).unwrap();
+    r.net.doorbell().ring(0);
+    wait_used(&r.rx, 1);
+    let (_, len) = r.rx.used()[0];
+    assert_eq!(len as usize, 12 + small.len());
+    let mut got = vec![0u8; len as usize];
+    r.rx.mem.read(buf, &mut got).unwrap();
+    assert_eq!(&got[12..], small.as_slice());
+}

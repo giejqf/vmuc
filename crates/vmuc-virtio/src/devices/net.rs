@@ -75,6 +75,9 @@ struct Loop {
     rx_spare: VecDeque<DescChain>,
     /// The socket may hold frames (edge-triggered readiness remembered).
     readable: bool,
+    /// Length of a frame in `frame` waiting for the guest to post enough
+    /// receive buffers (a 64 KiB TSO segment needs sixteen 4 KiB ones).
+    rx_pending: Option<usize>,
     frame: Vec<u8>,
 }
 
@@ -123,6 +126,7 @@ impl Loop {
                     self.ctx = None;
                     self.tx_pending = None;
                     self.rx_spare.clear();
+                    self.rx_pending = None;
                     let _ = ack.send(());
                 }
                 Ctrl::Shutdown => return false,
@@ -197,8 +201,41 @@ impl Loop {
         self.ctx = Some(ctx);
     }
 
+    /// Takes the next datagram into `frame`, header first; its length,
+    /// or `None` when the socket is empty (`readable` cleared) or the frame
+    /// was dropped (`readable` left set).
+    fn next_frame(&mut self, features: u64) -> Option<usize> {
+        self.frame.resize(HDR_LEN + MAX_FRAME, 0);
+        // With offloads the datagram brings its own header.
+        let skip = if self.offload { 0 } else { HDR_LEN };
+        let n = match self.socket.recv(&mut self.frame[skip..]) {
+            Ok(n) => n,
+            Err(e) => {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    self.readable = false;
+                } else {
+                    tracing::warn!("virtio-net recv: {e}");
+                    self.readable = false;
+                }
+                return None;
+            }
+        };
+        let total = skip + n;
+        if self.offload {
+            if let offload::Fit::Drop(why) =
+                offload::fit_for_guest(&mut self.frame[..total], features)
+            {
+                tracing::debug!(len = n, "virtio-net: dropped a frame with {why}");
+                return None;
+            }
+        } else {
+            self.frame[..HDR_LEN].fill(0);
+        }
+        Some(total)
+    }
+
     fn receive(&mut self) {
-        if !self.readable {
+        if !self.readable && self.rx_pending.is_none() {
             return;
         }
         let Some(mut ctx) = self.ctx.take() else {
@@ -206,6 +243,7 @@ impl Loop {
         };
         let mem = ctx.mem.clone();
         let mergeable = ctx.features & F_MRG_RXBUF != 0;
+        let ring = usize::from(ctx.queues[RX].size);
         let mut used_any = false;
         loop {
             // A buffer first: a frame taken off the socket cannot go back.
@@ -219,33 +257,14 @@ impl Loop {
                 }
                 break;
             };
-            self.frame.resize(HDR_LEN + MAX_FRAME, 0);
-            // With offloads the datagram brings its own header.
-            let skip = if self.offload { 0 } else { HDR_LEN };
-            let n = match self.socket.recv(&mut self.frame[skip..]) {
-                Ok(n) => n,
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::WouldBlock {
-                        self.readable = false;
-                    } else {
-                        tracing::warn!("virtio-net recv: {e}");
-                    }
-                    self.rx_spare.push_front(first);
-                    break;
+            let features = ctx.features;
+            let Some(total) = self.rx_pending.take().or_else(|| self.next_frame(features)) else {
+                self.rx_spare.push_front(first);
+                if self.readable {
+                    continue; // a frame was dropped; try the next
                 }
+                break;
             };
-            let total = skip + n;
-            if self.offload {
-                if let offload::Fit::Drop(why) =
-                    offload::fit_for_guest(&mut self.frame[..total], ctx.features)
-                {
-                    tracing::debug!(len = n, "virtio-net: dropped a frame with {why}");
-                    self.rx_spare.push_front(first);
-                    continue;
-                }
-            } else {
-                self.frame[..HDR_LEN].fill(0);
-            }
             // Spread the frame over as many chains as it needs.
             let mut room = Segments::writable(&first).len();
             let mut chains = vec![first];
@@ -259,13 +278,26 @@ impl Loop {
                 chains.push(next);
             }
             if room < total as u64 {
-                // Too few buffers for this frame: drop it, as a NIC with a
-                // full ring would, and keep the buffers for the next one.
-                tracing::debug!(len = n, "virtio-net: frame dropped, not enough rx buffers");
+                let never = !mergeable || chains.len() >= ring;
                 for c in chains.into_iter().rev() {
                     self.rx_spare.push_front(c);
                 }
-                continue;
+                if never {
+                    // More than the guest's buffers could ever hold.
+                    tracing::debug!(
+                        len = total,
+                        "virtio-net: frame dropped, larger than the ring"
+                    );
+                    continue;
+                }
+                // Hold the frame until the guest posts more buffers: the
+                // socket fills meanwhile and the helper waits, rather than
+                // TCP retransmitting a dropped 64 KiB segment.
+                self.rx_pending = Some(total);
+                if ctx.queues[RX].enable_notification(&mem).unwrap_or(false) {
+                    continue;
+                }
+                break;
             }
             let count = chains.len() as u16;
             self.frame[10..12].copy_from_slice(&count.to_le_bytes());
@@ -322,6 +354,7 @@ impl Net {
             tx_pending: None,
             rx_spare: VecDeque::new(),
             readable: false,
+            rx_pending: None,
             frame: Vec::new(),
         };
         let thread = thread::Builder::new()
@@ -371,7 +404,8 @@ impl VirtioDevice for Net {
             | if self.offload { offload::OFFERED } else { 0 }
     }
     fn queue_max_sizes(&self) -> Vec<u16> {
-        vec![256, 256]
+        // Receive gets room for many 64 KiB segments in 4 KiB buffers.
+        vec![1024, 256]
     }
     fn read_config(&self, offset: u64, data: &mut [u8]) {
         let off = offset as usize;
