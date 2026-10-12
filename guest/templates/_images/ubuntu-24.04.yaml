@@ -11,3 +11,15 @@ images:
 # Fallback to the latest release image. Run `vmuc prune` to drop a stale cache entry.
 - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
   arch: "aarch64"
+
+# Daemons for modems, removable disks and SAN paths, which a VM has none
+# of: about 25 MiB of host memory at idle
+# (docs/experiments/2026-10-12-idle-footprint.md). Disabled on the first
+# boot; later boots only check.
+provision:
+- mode: boot
+  script: |
+    if systemctl -q is-enabled ModemManager.service 2>/dev/null; then
+      systemctl disable --now ModemManager.service udisks2.service \
+        multipathd.socket multipathd.service
+    fi

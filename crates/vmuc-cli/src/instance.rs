@@ -373,9 +373,15 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
     // replays the kernel log once it is up. Free page reporting from order
     // 5 (128 KiB, eight host pages) instead of the 2 MiB pageblock: the
     // bulk path is as fast, and an idle guest hands back ~200 MiB more
-    // (docs/experiments/2026-10-11-reporting-order.md).
-    let mut cmdline =
-        format!("console=hvc0 root={root_arg} rw panic=-1 page_reporting.page_reporting_order=5");
+    // (docs/experiments/2026-10-11-reporting-order.md). No swiotlb: arm64
+    // sets aside a 64 MiB bounce buffer once RAM reaches past 4 GiB (ours
+    // starts at 1 GiB), but no vmuc device offers VIRTIO_F_ACCESS_PLATFORM,
+    // so nothing ever bounces and the buffer would be 64 MiB of host memory
+    // for nothing (docs/experiments/2026-10-12-idle-footprint.md).
+    let mut cmdline = format!(
+        "console=hvc0 root={root_arg} rw panic=-1 page_reporting.page_reporting_order=5 \
+         swiotlb=noforce"
+    );
     if let Some(extra) = resolved
         .images
         .first()
