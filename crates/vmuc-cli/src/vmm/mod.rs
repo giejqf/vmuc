@@ -144,6 +144,7 @@ pub fn run(home: &VmucHome, name: &str) -> anyhow::Result<()> {
 /// macOS's allocator keeps freed large blocks (the kernel image, the
 /// seed ISO, the agent binary) dirty and billed; hand them back once the
 /// guest is loaded, since this process lives as long as the VM.
+#[cfg(target_os = "macos")]
 fn release_freed_heap() {
     unsafe extern "C" {
         fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
@@ -152,6 +153,9 @@ fn release_freed_heap() {
     let freed = unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
     tracing::debug!(freed, "returned freed heap to the system");
 }
+
+#[cfg(not(target_os = "macos"))]
+fn release_freed_heap() {}
 
 fn boot_and_wait(
     home: &VmucHome,

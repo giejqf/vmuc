@@ -41,7 +41,15 @@ fn host_pressure() -> Pressure {
     }
 }
 
+/// This process's `phys_footprint`: what macOS bills the VM for. (0 on
+/// other hosts, where the VMM only builds for checks and tests.)
+#[cfg(not(target_os = "macos"))]
+pub fn host_footprint() -> u64 {
+    0
+}
+
 /// This process's `phys_footprint`: what macOS bills the VM for.
+#[cfg(target_os = "macos")]
 pub fn host_footprint() -> u64 {
     // SAFETY: a zeroed rusage_info_v4 is a valid out-buffer for flavor V4.
     let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
