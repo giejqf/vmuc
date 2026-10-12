@@ -66,6 +66,10 @@ enum Command {
         /// `LOCATION[:w]`, may repeat.
         #[arg(long)]
         mount: Vec<String>,
+        /// `path=value`, applied last, may repeat: `network.mode=bridged`,
+        /// `mounts=[{location: ~/src, writable: true}]`.
+        #[arg(long = "set", value_name = "PATH=VALUE")]
+        set: Vec<String>,
     },
     /// Start an instance and wait until ssh works.
     Start {
@@ -235,12 +239,14 @@ fn main() -> anyhow::Result<()> {
             memory,
             disk,
             mount,
+            set,
         } => {
             let overrides = instance::CreateOverrides {
                 cpus,
                 memory,
                 disk,
                 mounts: mount,
+                set,
             };
             let template = normalize_locator(&template);
             let inst = instance::create(&home, &store, &template, name.as_deref(), &overrides)?;

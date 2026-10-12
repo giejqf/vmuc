@@ -10,6 +10,7 @@
 //! The design follows Lima's `limayaml` / `limatmpl` / `cidata` packages;
 //! no code is shared.
 
+mod assign;
 pub mod cidata;
 pub mod defaults;
 pub mod paths;
@@ -41,6 +42,8 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    #[error("--set {assignment:?}: {reason}")]
+    InvalidAssignment { assignment: String, reason: String },
     #[error("invalid byte size {0:?} (expected e.g. \"8GiB\", \"512M\", \"1024\")")]
     InvalidByteSize(String),
     #[error("invalid digest {0:?} (expected \"sha256:<64 hex>\" or \"sha512:<128 hex>\")")]

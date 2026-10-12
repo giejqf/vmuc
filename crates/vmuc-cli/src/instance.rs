@@ -24,6 +24,8 @@ pub struct CreateOverrides {
     pub memory: Option<String>,
     pub disk: Option<String>,
     pub mounts: Vec<String>,
+    /// `path=value` assignments, applied after the rest.
+    pub set: Vec<String>,
 }
 
 pub struct Instance {
@@ -123,6 +125,9 @@ pub fn create(
     );
     let mut cfg = store.embed(&template)?;
     apply_overrides(&mut cfg, overrides)?;
+    if !overrides.set.is_empty() {
+        cfg = cfg.with_assignments(&overrides.set)?;
+    }
 
     let dir = home.instance_dir(&name)?;
     if dir.exists() {
