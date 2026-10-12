@@ -188,6 +188,9 @@ enum Command {
         via: String,
         method: String,
         params: Option<String>,
+        /// Call it N times and print round-trip quantiles instead.
+        #[arg(long)]
+        repeat: Option<u32>,
     },
 }
 
@@ -381,8 +384,14 @@ fn main() -> anyhow::Result<()> {
             via,
             method,
             params,
+            repeat,
         } => {
             let req = agent_client::parse_request(&method, params.as_deref())?;
+            if let Some(n) = repeat {
+                let q = agent_client::round_trips(&via, &req, n)?;
+                println!("{}", serde_json::to_string(&q)?);
+                return Ok(());
+            }
             let resp = agent_client::call(&via, &req)?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
             if matches!(resp, vmuc_proto::AgentResponse::Error { .. }) {

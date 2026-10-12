@@ -71,6 +71,44 @@ pub fn call(spec: &str, req: &AgentRequest) -> anyhow::Result<AgentResponse> {
     resp.ok_or_else(|| anyhow::anyhow!("agent closed the connection without a reply"))
 }
 
+/// Round-trip quantiles of `n` calls, microseconds: connection, request
+/// and reply each time, as every agent call pays.
+#[derive(Debug, serde::Serialize, PartialEq, Eq)]
+pub struct RoundTrips {
+    pub n: usize,
+    pub p50_us: u128,
+    pub p90_us: u128,
+    pub p99_us: u128,
+    pub max_us: u128,
+}
+
+pub fn round_trips(spec: &str, req: &AgentRequest, n: u32) -> anyhow::Result<RoundTrips> {
+    let mut us = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let t = std::time::Instant::now();
+        if let AgentResponse::Error { message } = call(spec, req)? {
+            bail!("agent: {message}");
+        }
+        us.push(t.elapsed().as_micros());
+    }
+    RoundTrips::of(us).ok_or_else(|| anyhow::anyhow!("--repeat needs at least one call"))
+}
+
+impl RoundTrips {
+    fn of(mut us: Vec<u128>) -> Option<Self> {
+        let last = us.len().checked_sub(1)?;
+        us.sort_unstable();
+        let q = |p: usize| us[last * p / 100];
+        Some(Self {
+            n: us.len(),
+            p50_us: q(50),
+            p90_us: q(90),
+            p99_us: q(99),
+            max_us: us[last],
+        })
+    }
+}
+
 /// Parses `METHOD [JSON params]` from the command line into a request:
 /// `hello`, `mem_info`, `exec '["uname","-a"]'`, `tunnel 127.0.0.1:22`.
 pub fn parse_request(method: &str, params: Option<&str>) -> anyhow::Result<AgentRequest> {
@@ -101,6 +139,16 @@ pub fn parse_request(method: &str, params: Option<&str>) -> anyhow::Result<Agent
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_trip_quantiles() {
+        let q = RoundTrips::of((1..=100).rev().collect()).unwrap();
+        assert_eq!(
+            (q.n, q.p50_us, q.p90_us, q.p99_us, q.max_us),
+            (100, 50, 90, 99, 100)
+        );
+        assert_eq!(RoundTrips::of(vec![]), None);
+    }
 
     #[test]
     fn parses_simple_and_exec() {

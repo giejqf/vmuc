@@ -14,7 +14,7 @@ vCPUs unless noted.
 | Freed guest memory back to the host | ≥ 90 % within 10 s | 87–100 % of 2 GiB within 10 s | met in 2 of 3 runs | [mem-reclaim](mem-reclaim.md) |
 | Reclaim-induced vCPU stall | < 5 ms | +13 µs worst gap on an unrelated vCPU at saturation | met | [reclaim stall](../experiments/2026-10-11-reclaim-stall.md), `crates/vmuc-hv/tests/stall.rs` |
 | Net single flow host↔guest | > 10 Gbit/s | not measured: needs the root vmnet helper installed | open | — |
-| vsock RPC p50 | < 0.3 ms | not measured as such; a virtio round trip is ~28 µs | open | [round trip](../experiments/2026-10-12-virtio-round-trip.md) |
+| vsock RPC p50 | < 0.3 ms | 0.138 ms (p99 0.239 ms), new connection per call | met | [vsock-rpc](vsock-rpc.md) |
 | virtiofs | ≥ VZ virtiofs on the same host | 3.2 GB/s write, 3.6 GB/s cold read, open+close 72 µs | VZ reference not measured yet (Lima not installed) | [fs](fs.md) |
 
 Re-run one with `make bench-local NAME=<probe>` on the Mac (or
