@@ -79,6 +79,7 @@ impl Loop {
             let len = frame.len() as usize;
             if len > MAX_FRAME {
                 tracing::debug!(len, "virtio-net: transmit frame too large, dropped");
+                self.counters.drop_one();
                 let _ = ctx.queues[TX].add_used(&mem, chain.head, 0);
                 continue;
             }
@@ -98,6 +99,8 @@ impl Loop {
             let dst = unsafe { std::slice::from_raw_parts_mut(slot.data(), len) };
             let n = frame.read_into(&mem, dst).unwrap_or(0);
             rings.tx.commit(&slot, n);
+            let hdr = if self.offload { HDR_LEN } else { 0 };
+            self.counters.sent(n.saturating_sub(hdr));
             let _ = ctx.queues[TX].add_used(&mem, chain.head, 0);
         }
         if rings.tx.publish() {
@@ -155,6 +158,7 @@ impl Loop {
                 let f = unsafe { std::slice::from_raw_parts_mut(data.cast_mut(), len) };
                 if let offload::Fit::Drop(why) = offload::fit_for_guest(f, features) {
                     tracing::debug!(len, "virtio-net: dropped a frame with {why}");
+                    self.counters.drop_one();
                     rings.rx.advance();
                     self.rx_spare.push_front(first);
                     continue;
@@ -172,12 +176,17 @@ impl Loop {
                 }
                 &mut self.frame[..total]
             };
+            let frame_bytes = frame.len() - HDR_LEN;
             match deliver(&mut ctx, &mut self.rx_spare, first, frame) {
                 Delivery::Done => {
+                    self.counters.received(frame_bytes);
                     rings.rx.advance();
                     used_any = true;
                 }
-                Delivery::Dropped => rings.rx.advance(),
+                Delivery::Dropped => {
+                    self.counters.drop_one();
+                    rings.rx.advance();
+                }
                 Delivery::Wait => {
                     if ctx.queues[RX].enable_notification(&mem).unwrap_or(false) {
                         continue;

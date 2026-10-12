@@ -48,7 +48,7 @@ fn render(name: &str, s: &Stat) -> String {
     format!(
         "{name}\n  host footprint   {}\n  guest memory     {guest}\n  reported free    {}\n  \
          released         {} (p50 {} µs, p99 {} µs per range)\n  balloon          {}\n  \
-         host CPU time    {:.1} s\n",
+         host CPU time    {:.1} s\n  network          {} in, {} out{}\n",
         human(s.host_footprint),
         human(s.reported),
         human(s.released),
@@ -56,6 +56,13 @@ fn render(name: &str, s: &Stat) -> String {
         s.release_p99_us,
         human(s.balloon),
         Duration::from_nanos(s.host_cpu_nanos).as_secs_f64(),
+        human(s.net_rx_bytes),
+        human(s.net_tx_bytes),
+        if s.net_dropped == 0 {
+            String::new()
+        } else {
+            format!(", {} frames dropped", s.net_dropped)
+        },
     )
 }
 

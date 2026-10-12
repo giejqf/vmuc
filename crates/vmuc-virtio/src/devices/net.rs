@@ -20,6 +20,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -56,6 +57,36 @@ const WAKER: Token = Token(0);
 const SOCKET: Token = Token(1);
 const CONTROL: u32 = 1 << 31;
 
+/// Traffic through the NIC since it was created, for `vmuc stat`.
+/// Bytes are Ethernet frames, without the virtio-net header.
+#[derive(Debug, Default)]
+pub struct NetCounters {
+    pub rx_bytes: AtomicU64,
+    pub rx_frames: AtomicU64,
+    pub tx_bytes: AtomicU64,
+    pub tx_frames: AtomicU64,
+    /// Frames dropped in either direction.
+    pub dropped: AtomicU64,
+}
+
+impl NetCounters {
+    fn sent(&self, frame_bytes: usize) {
+        self.tx_frames.fetch_add(1, Ordering::Relaxed);
+        self.tx_bytes
+            .fetch_add(frame_bytes as u64, Ordering::Relaxed);
+    }
+
+    fn received(&self, frame_bytes: usize) {
+        self.rx_frames.fetch_add(1, Ordering::Relaxed);
+        self.rx_bytes
+            .fetch_add(frame_bytes as u64, Ordering::Relaxed);
+    }
+
+    fn drop_one(&self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 enum Ctrl {
     Activate(WorkerCtx),
     Reset(Sender<()>),
@@ -65,6 +96,7 @@ enum Ctrl {
 struct Loop {
     /// Datagrams carry the virtio-net header (offloads on).
     offload: bool,
+    counters: Arc<NetCounters>,
     /// Frames travel through shared rings; the socket only kicks.
     rings: Option<rings::Rings>,
     poll: Poll,
@@ -165,13 +197,18 @@ impl Loop {
         // SAFETY: the iovecs point into guest buffers validated above.
         let n = unsafe { libc::sendmsg(self.socket.as_raw_fd(), &raw const msg, 0) };
         if n >= 0 {
+            let hdr = if self.offload { HDR_LEN } else { 0 };
+            self.counters.sent((n as usize).saturating_sub(hdr));
             return Ok(true);
         }
         let e = io::Error::last_os_error();
         match e.kind() {
             io::ErrorKind::WouldBlock => Ok(false),
             // A frame larger than the socket allows: drop it, as a NIC would.
-            _ if e.raw_os_error() == Some(libc::EMSGSIZE) => Ok(true),
+            _ if e.raw_os_error() == Some(libc::EMSGSIZE) => {
+                self.counters.drop_one();
+                Ok(true)
+            }
             _ => Err(e),
         }
     }
@@ -239,6 +276,7 @@ impl Loop {
                 offload::fit_for_guest(&mut self.frame[..total], features)
             {
                 tracing::debug!(len = n, "virtio-net: dropped a frame with {why}");
+                self.counters.drop_one();
                 return None;
             }
         } else {
@@ -282,8 +320,11 @@ impl Loop {
                 first,
                 &mut self.frame[..total],
             ) {
-                Delivery::Done => {}
-                Delivery::Dropped => continue,
+                Delivery::Done => self.counters.received(total - HDR_LEN),
+                Delivery::Dropped => {
+                    self.counters.drop_one();
+                    continue;
+                }
                 Delivery::Wait => {
                     // Hold the frame until the guest posts more buffers:
                     // the socket fills meanwhile and the helper waits,
@@ -368,6 +409,7 @@ fn deliver(
 
 pub struct Net {
     offload: bool,
+    counters: Arc<NetCounters>,
     config: [u8; 12],
     doorbell: Arc<WakerDoorbell>,
     ctrl: Sender<Ctrl>,
@@ -394,8 +436,10 @@ impl Net {
         poll.registry()
             .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
         let (ctrl, rx) = mpsc::channel();
+        let counters = Arc::new(NetCounters::default());
         let event_loop = Loop {
             offload,
+            counters: Arc::clone(&counters),
             rings: rings.map(rings::Rings::new),
             poll,
             socket,
@@ -418,11 +462,17 @@ impl Net {
         config[10..12].copy_from_slice(&MTU.to_le_bytes());
         Ok(Self {
             offload,
+            counters,
             config,
             doorbell,
             ctrl,
             thread: Some(thread),
         })
+    }
+
+    /// Traffic counters, live.
+    pub fn counters(&self) -> Arc<NetCounters> {
+        Arc::clone(&self.counters)
     }
 
     fn send(&self, msg: Ctrl) -> bool {

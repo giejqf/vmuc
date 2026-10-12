@@ -6,19 +6,25 @@
 
 use std::io::Read;
 use std::process::Child;
+use std::sync::Arc;
 
 use vmuc_config::ResolvedConfig;
 use vmuc_config::schema::NetworkMode;
 use vmuc_net::helper::Mode;
 use vmuc_proto::EventKind;
-use vmuc_virtio::devices::net::{Net, parse_mac};
+use vmuc_virtio::devices::net::{Net, NetCounters, parse_mac};
 use vmuc_vmm::VmBuilder;
 
 use crate::assets;
 use crate::state::EventLog;
 
-/// Adds the NIC if the helper starts, and watches the helper.
-pub fn attach(b: &mut VmBuilder, resolved: &ResolvedConfig, events: &EventLog) {
+/// Adds the NIC if the helper starts, and watches the helper. Returns the
+/// NIC's traffic counters.
+pub fn attach(
+    b: &mut VmBuilder,
+    resolved: &ResolvedConfig,
+    events: &EventLog,
+) -> Option<Arc<NetCounters>> {
     let mode = match resolved.network.mode {
         NetworkMode::Shared => Mode::Shared,
         NetworkMode::Bridged => Mode::Bridged(resolved.network.interface.clone()),
@@ -26,6 +32,7 @@ pub fn attach(b: &mut VmBuilder, resolved: &ResolvedConfig, events: &EventLog) {
     let warn = |msg: String| {
         tracing::warn!("{msg}");
         events.push(EventKind::Warning { message: msg });
+        None
     };
     let Some(mac) = parse_mac(&resolved.network.mac_address) else {
         return warn(format!(
@@ -39,16 +46,16 @@ pub fn attach(b: &mut VmBuilder, resolved: &ResolvedConfig, events: &EventLog) {
     };
     tracing::info!(?launched.hello, "vmnet interface up");
     let rings = launched.region.as_ref();
-    match Net::new(mac, launched.socket, launched.hello.virtio_header, rings)
-        .map_err(|e| e.to_string())
-        .and_then(|net| {
-            b.add_virtio(Box::new(net))
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }) {
-        Ok(()) => watch(launched.child, events.clone()),
-        Err(e) => warn(format!("networking unavailable: {e}")),
+    let net = match Net::new(mac, launched.socket, launched.hello.virtio_header, rings) {
+        Ok(net) => net,
+        Err(e) => return warn(format!("networking unavailable: {e}")),
+    };
+    let counters = net.counters();
+    if let Err(e) = b.add_virtio(Box::new(net)) {
+        return warn(format!("networking unavailable: {e}"));
     }
+    watch(launched.child, events.clone());
+    Some(counters)
 }
 
 /// The helper ends by itself only when something went wrong (otherwise it

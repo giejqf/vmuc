@@ -78,6 +78,9 @@ fn transmit_strips_the_header_and_sends_one_datagram() {
     let len = r.peer.recv(&mut got).unwrap();
     assert_eq!(&got[..len], sent.as_slice());
     wait_used(&r.tx, 1);
+    let c = r.net.counters();
+    assert_eq!(c.tx_frames.load(Ordering::Relaxed), 1);
+    assert_eq!(c.tx_bytes.load(Ordering::Relaxed), sent.len() as u64);
 }
 
 fn post_rx(d: &mut Driver, size: u32) -> Gpa {
@@ -106,6 +109,9 @@ fn receive_waits_for_buffers_then_delivers_header_and_frame() {
     r.rx.mem.read(buf, &mut got).unwrap();
     assert_eq!(u16::from_le_bytes([got[10], got[11]]), 1, "num_buffers");
     assert_eq!(&got[12..], f.as_slice());
+    let c = r.net.counters();
+    assert_eq!(c.rx_frames.load(Ordering::Relaxed), 1);
+    assert_eq!(c.rx_bytes.load(Ordering::Relaxed), f.len() as u64);
 }
 
 #[test]

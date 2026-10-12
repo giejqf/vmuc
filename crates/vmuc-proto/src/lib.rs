@@ -234,6 +234,14 @@ pub struct Stat {
     /// User + system CPU time of the VMM process (vCPUs and devices):
     /// what the VM has cost the host, nanoseconds since it started.
     pub host_cpu_nanos: u64,
+    /// Guest network traffic since start (Ethernet frames; 0 without a
+    /// NIC). Absent from older VMMs.
+    #[serde(default)]
+    pub net_rx_bytes: u64,
+    #[serde(default)]
+    pub net_tx_bytes: u64,
+    #[serde(default)]
+    pub net_dropped: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

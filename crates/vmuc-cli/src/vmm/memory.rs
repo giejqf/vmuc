@@ -89,6 +89,18 @@ pub fn stat(shared: &Shared) -> Stat {
         release_p50_us: r.latency_quantile_us(500),
         release_p99_us: r.latency_quantile_us(990),
         host_cpu_nanos: cpu_time(),
+        net_rx_bytes: shared
+            .net
+            .as_ref()
+            .map_or(0, |n| n.rx_bytes.load(Ordering::Relaxed)),
+        net_tx_bytes: shared
+            .net
+            .as_ref()
+            .map_or(0, |n| n.tx_bytes.load(Ordering::Relaxed)),
+        net_dropped: shared
+            .net
+            .as_ref()
+            .map_or(0, |n| n.dropped.load(Ordering::Relaxed)),
     }
 }
 

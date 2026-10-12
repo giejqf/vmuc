@@ -62,6 +62,8 @@ pub struct Shared {
     min_available: u64,
     forwards: Mutex<Vec<Forward>>,
     addrs: Mutex<Vec<std::net::IpAddr>>,
+    /// The NIC's traffic counters, when there is a NIC.
+    net: Option<Arc<vmuc_virtio::devices::net::NetCounters>>,
 }
 
 impl Shared {
@@ -215,7 +217,7 @@ fn boot_and_wait(
     b.add_virtio(Box::new(Rng::new()?))?;
     let (balloon, reclaim) = b.add_balloon()?;
     // Last, so disks keep their names: the NIC, when the helper starts.
-    network::attach(&mut b, &resolved, &events);
+    let net = network::attach(&mut b, &resolved, &events);
     // After the NIC, so its slot does not depend on the mounts.
     shares::attach(&mut b, fs_shares)?;
     // Mapped, not read: a heap copy would stay billed for the VM's life.
@@ -243,6 +245,7 @@ fn boot_and_wait(
         min_available: resolved.memory_policy.min_available.bytes(),
         forwards: Mutex::new(Vec::new()),
         addrs: Mutex::new(Vec::new()),
+        net,
     });
     server::spawn(&inst.dir, Arc::clone(&shared))?;
     ready::spawn(Arc::clone(&shared));
