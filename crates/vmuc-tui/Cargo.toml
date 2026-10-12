@@ -8,7 +8,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
+ratatui = { workspace = true }
+
+[dependencies.vmuc-proto]
+path = "../vmuc-proto"
 
 [lints]
 workspace = true

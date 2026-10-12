@@ -45,6 +45,8 @@ hex = "0.4"
 lzma-rs = "0.3"
 sha2 = "0.11"
 ureq = { version = "3.4", default-features = false }
+# vmuc-tui (crossterm comes re-exported as ratatui::crossterm)
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
 # dev
 tempfile = "3.27"
 
