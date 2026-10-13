@@ -16,6 +16,7 @@ use vmuc_proto::EventKind;
 use vmuc_virtio::devices::fs::Fs;
 use vmuc_vmm::{FileWindow, VmBuilder};
 
+use super::watch::Watched;
 use crate::instance;
 use crate::state::EventLog;
 
@@ -23,6 +24,17 @@ use crate::state::EventLog;
 pub struct Share {
     pub mount: SeedMount,
     server: Server,
+}
+
+impl Share {
+    /// What the host-change watcher needs of it.
+    pub fn watched(&self) -> Watched {
+        Watched {
+            tag: self.mount.tag.clone(),
+            root: self.server.fs().root().to_owned(),
+            seen: self.server.fs().seen(),
+        }
+    }
 }
 
 /// Opens every configured mount's host directory.

@@ -16,6 +16,7 @@ mod ready;
 mod server;
 mod shares;
 mod signals;
+mod watch;
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::process::CommandExt;
@@ -170,6 +171,7 @@ fn boot_and_wait(
     let agent = assets::agent()?;
     let fs_shares = shares::open(&resolved, &events);
     let mounts: Vec<_> = fs_shares.iter().map(|s| s.mount.clone()).collect();
+    let watched = fs_shares.iter().map(shares::Share::watched).collect();
     let boot_id = instance::write_seed(home, inst, &resolved, Some(&agent), &mounts)?;
     events.push(EventKind::Booting {
         boot_id: boot_id.clone(),
@@ -251,6 +253,7 @@ fn boot_and_wait(
     ready::spawn(Arc::clone(&shared));
     memory::spawn_responder(Arc::clone(&shared));
     forward::spawn(Arc::clone(&shared), resolved.port_forwards.clone())?;
+    watch::spawn(Arc::clone(&shared), watched)?;
     signals::spawn(signals, Arc::clone(&shared))?;
 
     let exit = vm.wait();
