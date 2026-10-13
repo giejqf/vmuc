@@ -43,7 +43,8 @@ instances, and nothing graphical beyond the terminal.
 | Forbidden crates | Anything implementing a VMM, hypervisor bindings, virtqueues, virtio devices, a virtiofs/FUSE server, a TCP/IP stack, or wrapping vz/QEMU/libkrun | Requirement 4 read strictly, and the memory manager must own guest memory |
 | License | Apache-2.0 only; `NOTICE` carries attributions for code ported from ArcBox (MIT OR Apache-2.0) | Requirement |
 | Distribution | Homebrew formula in our own tap, ad-hoc codesign with `vmuc.entitlements` at install; kernel as a formula resource | Lima and QEMU prove it |
-| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots, DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
+| Suspend | `vmuc suspend` writes a running instance to its directory and ends the VMM; `vmuc start` resumes it with guest RAM mapped copy-on-write from the image; one suspended state per instance, resumed at most once (ADR 0007) | Programs survive and a suspended instance costs no memory; a restore takes ~40 ms (E5) |
+| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots beyond suspend (named snapshots, clones, migration), DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
 
 ## Repository layout
 
@@ -234,7 +235,8 @@ ADR 0006).
 ```
 vmuc create   [TEMPLATE|FILE|URL] [--name] [--cpus] [--memory] [--disk] [--mount] [--set yq-like]
 vmuc start    NAME [--timeout] [--foreground]
-vmuc stop     NAME [--force]
+vmuc stop     NAME [--force]     (--force also discards a suspended state)
+vmuc suspend  NAME               save the running instance; `start` resumes it
 vmuc restart  NAME
 vmuc shell    NAME [-- CMD...]   [--workdir]
 vmuc copy     SRC DST            (scp through the tunnel)
@@ -416,8 +418,8 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
   GIC and the timers restore exactly through the macOS 15 API, a restore
   with guest RAM mapped copy-on-write takes ~40 ms and costs only what
   the guest then writes, and reclaim needs no exception for it (unlike
-  mvm). Prototype in `vmuc _boot`; suspending instances is a separate
-  decision (snapshots stay out of scope for v0.1).
+  mvm). Prototype in `vmuc _boot`; instances suspend and resume with it
+  (ADR 0007).
 - E6 APFS sparse accounting: the macOS CI runners report full
   allocation (`st_blocks`) for files written with seek-over-zero holes,
   while Linux reports only the data. Measure on a real Mac whether APFS
