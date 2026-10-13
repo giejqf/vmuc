@@ -33,7 +33,7 @@ WORKLOADS = {
         "dd if=/var/tmp/e1-cache.bin of=/dev/null bs=1M status=none; sleep {s}",
     ),
     # Bursts of 2.5 GiB of anonymous memory, held 30 s, freed for 30 s:
-    # a link step or a test suite arriving while the balloon is inflated.
+    # a link step or a test suite arriving under pressure.
     "anon": (
         "true",
         "python3 -c \"\n"
@@ -120,7 +120,7 @@ while worker.is_alive() or time.time() - t0 < seconds:
         lvl, switched = want, now
     s = json.loads(run("stat", name, "--json", check=True).stdout)
     samples.append({"t": round(now, 1), "level": want, "footprint": s["host_footprint"],
-                    "balloon": s["balloon"], "available": s["guest_available"],
+                    "available": s["guest_available"],
                     "cpu_ns": s["host_cpu_nanos"]})
     time.sleep(max(0.0, 1.0 - (time.time() - t0 - now)))
     if not worker.is_alive() and workload == "build":
@@ -132,26 +132,18 @@ run("stop", name)
 
 fp = [x["footprint"] / MIB for x in samples]
 cpu = (samples[-1]["cpu_ns"] - samples[0]["cpu_ns"]) / 1e9 / max(1e-9, samples[-1]["t"] - samples[0]["t"]) * 100
-bal = [x["balloon"] / MIB for x in samples]
 avail = [x["available"] / MIB for x in samples if x["available"]]
-# Balloon episodes: each change of direction (inflating, deflating).
-moves = []
-for a, b in zip(bal, bal[1:]):
-    if abs(b - a) >= 16:
-        d = 1 if b > a else -1
-        if not moves or moves[-1] != d:
-            moves.append(d)
 res = next((l.split("result=", 1)[1] for l in result.get("out", []) if "result=" in l),
            f"exit {result.get('status')}")
-policy_on = "pressureBalloon: true" in open(os.path.expanduser(f"~/.vmuc/{name}/vmuc.yaml")).read()
 sha = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 dirty = subprocess.run(["git", "-C", root, "diff", "--quiet", "HEAD", "--", "crates"]).returncode != 0
 mac = subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout.strip()
 chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()
 q = statistics.quantiles(fp, n=20)
-row = (f"| {datetime.date.today()} | {chip}, macOS {mac} | {name} | balloon {'on' if policy_on else 'off'} "
-       f"({sha}{'+' if dirty else ''}) | {workload} | {level} | {round(time.time() - t0)} | "
-       f"{statistics.mean(fp):.0f} / {q[18]:.0f} / {max(fp):.0f} | {max(bal):.0f} | {len(moves)} | "
+# The balloon columns stay for the rows from before ADR 0004.
+row = (f"| {datetime.date.today()} | {chip}, macOS {mac} | {name} | {sha}{'+' if dirty else ''} | "
+       f"{workload} | {level} | {round(time.time() - t0)} | "
+       f"{statistics.mean(fp):.0f} / {q[18]:.0f} / {max(fp):.0f} | — | — | "
        f"{min(avail) if avail else 0:.0f} | {cpu:.0f} | {(after['stall_us'] - before['stall_us']) / 1e6:.1f} | "
        f"{after['pgmajfault'] - before['pgmajfault']} | {after['oom_kill'] - before['oom_kill']} | {res} |")
 with open(f"{root}/docs/benchmarks/mem-pressure.md", "a") as f:

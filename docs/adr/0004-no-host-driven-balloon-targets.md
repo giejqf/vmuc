@@ -45,7 +45,7 @@ back-off) were complexity guarding a mechanism that did not pay.
   only what the guest frees or what dropping caches frees. That is all
   E1 found returnable.
 - The probe that measured balloon releases, `balloon-release.sh`, is
-  removed with the request it used; it remains in history at the commit
-  that recorded E1.
+  removed with the request it used; it remains at commit 843251d, which
+  recorded E1.
 - Bringing any host-driven shrink back needs an experiment in which it
   beats dropping caches on `tests/bench/mem-pressure` (AGENTS.md).

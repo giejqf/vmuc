@@ -10,9 +10,8 @@
 # build (vmuc's kernel, -j4; the row's duration is the build's).
 # LEVEL: normal | warn | critical, held with `vmuc _pressure` for the
 # whole run, or pulse (critical and normal alternating every 180 s).
-# SECONDS defaults to 600. Whether the balloon may inflate is the
-# instance's memoryPolicy.pressureBalloon, named in the row with the
-# commit (+ when crates/ has uncommitted changes). Appends a dated row to
+# SECONDS defaults to 600. The row names the commit (+ when crates/ has
+# uncommitted changes) as the policy. Appends a dated row to
 # docs/benchmarks/mem-pressure.md; per-second samples go to
 # target/bench/mem-pressure/.
 set -euo pipefail

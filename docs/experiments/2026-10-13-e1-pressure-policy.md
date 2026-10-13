@@ -73,7 +73,8 @@ A real build (vmuc's kernel without debug info, `-j4`, about 170 s):
 With debug info and BTF the build was OOM-killed at normal pressure
 (pahole outgrows a 4 GiB guest), so the workload drops them.
 
-What the balloon can return, from `tests/bench/mem-pressure/balloon-release.sh`:
+What the balloon can return, from `tests/bench/mem-pressure/balloon-release.sh`
+(commit 843251d; removed with ADR 0004):
 with 2 GiB of a file cached (read in order), a 3.2 GiB balloon target
 lowered the footprint by 1365 and 1288 MiB in two runs, with the
 released counter rising by as much.
