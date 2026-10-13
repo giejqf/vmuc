@@ -110,3 +110,6 @@ released counter rising by as much.
    (episodes 10 → 2, stall 13 → 2.7 s on the hot workload, 12 → 4 under
    pulses) for anyone who does. Retiring host-driven balloon targets
    altogether is a question for an ADR; this entry is its evidence.
+
+**Follow-up.** ADR 0004 (2026-10-13) retired host-driven balloon
+targets on this evidence.
