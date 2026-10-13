@@ -35,7 +35,7 @@ use crate::layout::{
     virtio_slot_base, virtio_slot_spi,
 };
 use crate::loader::{BootLayout, ImageHeader, LoadError};
-use crate::machine::{Machine, VmExit};
+use crate::machine::{CpuSnapshot, Machine, VmExit};
 use crate::memory::reclaim::HvStage2;
 use crate::memory::{GuestRam, ReclaimError, ReclaimStats, Reclaimer};
 use crate::snapshot::{self, Cpu, RamRestore};
@@ -406,6 +406,9 @@ impl VmBuilder {
     }
 }
 
+/// How long devices may take to finish what they took before a snapshot.
+const QUIESCE: Duration = Duration::from_secs(3);
+
 /// What taking a snapshot cost.
 #[derive(Debug, Clone, Copy)]
 pub struct SnapshotStats {
@@ -447,8 +450,12 @@ impl Vm {
         &self.machine
     }
 
-    /// Pauses the guest and writes it to `dir` (see [`snapshot`]). The VM
-    /// stays paused with its devices stopped: drop it afterwards.
+    /// Pauses the guest and writes it to `dir` (see [`snapshot`]): the
+    /// vCPUs stop, every device finishes what it took, then the devices,
+    /// the GIC (last, with any interrupt a finishing device raised) and
+    /// guest RAM are saved. On success the VM stays paused with its
+    /// devices quiesced: drop it, or [`Vm::resume`] it. On error the guest
+    /// already runs on.
     pub fn snapshot(&self, dir: &Path) -> Result<SnapshotStats, VmError> {
         let started = Instant::now();
         let cpus = self
@@ -457,17 +464,32 @@ impl Vm {
             .ok_or_else(|| VmError::Snapshot("the VM stopped while pausing".into()))?;
         let paused_at = vmuc_hv::state::host_counter();
         let pause = started.elapsed();
-        let gic = Gic::save_state()?;
-        let transports = self.transports.iter().map(|t| t.save()).collect();
-        // Their workers stop touching guest RAM before it is read.
-        for t in &self.transports {
-            t.shutdown();
+        match self.save(dir, cpus, paused_at) {
+            Ok(ram_bytes) => Ok(SnapshotStats {
+                pause,
+                ram_bytes,
+                total: started.elapsed(),
+            }),
+            Err(e) => {
+                self.resume();
+                Err(e)
+            }
         }
+    }
+
+    /// Quiesces the paused VM's devices and writes it out; returns the
+    /// bytes of guest RAM written.
+    fn save(&self, dir: &Path, cpus: Vec<CpuSnapshot>, paused_at: u64) -> Result<u64, VmError> {
+        for t in &self.transports {
+            t.quiesce(QUIESCE).map_err(VmError::Snapshot)?;
+        }
+        let transports = self.transports.iter().map(|t| t.save()).collect();
         let devices = self
             .stateful
             .iter()
             .map(|(name, dev)| ((*name).to_owned(), dev.save()))
             .collect();
+        let gic = Gic::save_state()?;
         let io = |e: std::io::Error| VmError::Snapshot(e.to_string());
         std::fs::create_dir_all(dir).map_err(io)?;
         // SAFETY: guest RAM's mapping; vCPUs and devices are stopped.
@@ -490,11 +512,20 @@ impl Vm {
         }
         .write(dir, &gic)
         .map_err(io)?;
-        Ok(SnapshotStats {
-            pause,
-            ram_bytes,
-            total: started.elapsed(),
-        })
+        Ok(ram_bytes)
+    }
+
+    /// Lets the guest run on after a snapshot: devices activate again,
+    /// picking up at their used rings, and the vCPUs continue where they
+    /// stopped. A device that cannot come back stops the VM.
+    pub fn resume(&self) {
+        for t in &self.transports {
+            if let Err(e) = t.reactivate() {
+                self.machine
+                    .request_exit(VmExit::Crashed(format!("a device after a snapshot: {e}")));
+            }
+        }
+        self.machine.resume();
     }
 
     /// Blocks until the guest powers off, resets, crashes or is stopped,

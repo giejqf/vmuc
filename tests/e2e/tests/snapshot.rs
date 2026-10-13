@@ -85,3 +85,25 @@ fn a_snapshot_carries_on_in_a_new_vm() {
         );
     }
 }
+
+#[test]
+#[ignore = "boots a VM: Apple silicon only"]
+fn a_snapshotted_vm_runs_on_when_resumed() {
+    let _vm = vm_lock();
+    let (kernel, initrd) = (artifact("Image"), artifact("busybox-initramfs.cpio"));
+    let dir = tempfile::tempdir().unwrap();
+    let cap = Capture::default();
+    let (out, writer) = cap.console();
+    let vm = builder(&out).boot(&kernel, Some(&initrd)).unwrap();
+    watchdog(vm.machine(), Duration::from_secs(30));
+    cap.wait_for("VMUC_TICK 12 ", Duration::from_secs(20));
+    vm.snapshot(dir.path()).unwrap();
+    vm.resume();
+    // Devices came back: virtio-rng answers at tick 30.
+    cap.wait_for("VMUC_REFILLED hwrng=16", Duration::from_secs(10));
+    cap.wait_for("VMUC_TICK 41 ", Duration::from_secs(10));
+    vm.machine().request_exit(VmExit::Stopped);
+    assert_eq!(vm.wait(), VmExit::Stopped);
+    out.close();
+    writer.join().unwrap();
+}

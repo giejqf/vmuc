@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle, Thread};
+use std::time::{Duration, Instant};
 
 use crate::irq::Interrupt;
 use crate::mem::GuestMemory;
@@ -145,6 +146,26 @@ pub trait VirtioDevice: Send {
     /// Driver reset: when this returns the device no longer touches the
     /// queues or guest memory.
     fn reset(&mut self);
+    /// Before a snapshot, with the vCPUs paused: stop taking buffers and
+    /// finish every one taken, within `timeout`, so the queues can pick
+    /// up again at their used rings. On `Ok` the device no longer touches
+    /// the queues or guest memory (until activated again); on `Err` it
+    /// carries on as before. A device that completes buffers in the order
+    /// it takes them can forget the ones it holds unfinished: they are
+    /// taken again. Resetting does all that, unless host-side state must
+    /// outlive it.
+    fn quiesce(&mut self, _timeout: Duration) -> Result<(), String> {
+        self.reset();
+        Ok(())
+    }
+    /// The device's own state for a snapshot, taken after `quiesce`.
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    /// Puts saved state back into a new device, before it is activated.
+    fn restore_state(&mut self, _state: serde_json::Value) -> Result<(), String> {
+        Ok(())
+    }
     /// The doorbell for queue kicks; fixed for the device's lifetime.
     fn doorbell(&self) -> Arc<dyn Doorbell>;
     /// Shared memory regions; fixed for the device's lifetime.
@@ -241,6 +262,12 @@ pub trait QueueHandler: Send + 'static {
     fn process(&mut self, ctx: &mut WorkerCtx, bits: u32);
     /// Called when the driver resets the device.
     fn reset(&mut self) {}
+    /// Finishes the buffers taken from the queues, taking no more, by
+    /// `deadline` (see [`VirtioDevice::quiesce`]); an `Err` leaves the
+    /// handler running as before.
+    fn drain(&mut self, _ctx: &mut WorkerCtx, _deadline: Instant) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// What a handler works on between activation and reset.
@@ -254,6 +281,7 @@ pub struct WorkerCtx {
 enum Ctrl {
     Activate(WorkerCtx),
     Reset(Sender<()>),
+    Quiesce(Instant, Sender<Result<(), String>>),
     Shutdown,
 }
 
@@ -318,6 +346,18 @@ impl Worker {
             let _ = rx.recv();
         }
     }
+
+    /// [`VirtioDevice::quiesce`]: the handler drains, then resets as the
+    /// worker drops the queues.
+    pub fn quiesce(&self, timeout: Duration) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.ctrl
+            .send(Ctrl::Quiesce(Instant::now() + timeout, tx))
+            .map_err(|_| "device worker is gone".to_owned())?;
+        self.doorbell.ring_bits(CONTROL);
+        rx.recv()
+            .unwrap_or_else(|_| Err("device worker is gone".into()))
+    }
 }
 
 impl Drop for Worker {
@@ -342,6 +382,17 @@ fn run(db: &ParkDoorbell, rx: &Receiver<Ctrl>, handler: &mut impl QueueHandler) 
                         ctx = None;
                         handler.reset();
                         let _ = ack.send(());
+                    }
+                    Ctrl::Quiesce(deadline, ack) => {
+                        let drained = ctx.as_mut().map_or(Ok(()), |c| handler.drain(c, deadline));
+                        if drained.is_ok() {
+                            ctx = None;
+                            handler.reset();
+                        } else {
+                            // Carry on: look at every queue again.
+                            db.ring_bits(0x3fff_ffff);
+                        }
+                        let _ = ack.send(drained);
                     }
                     Ctrl::Shutdown => return,
                 }
@@ -424,5 +475,59 @@ mod tests {
         w.doorbell().ring(0);
         thread::sleep(Duration::from_millis(20));
         assert_eq!(seen.load(Ordering::SeqCst), 0, "reset drops the queues");
+    }
+
+    /// Drains only once `ready` is set.
+    struct Slow {
+        ready: Arc<AtomicU32>,
+        processed: Arc<AtomicU32>,
+    }
+    impl QueueHandler for Slow {
+        fn process(&mut self, _ctx: &mut WorkerCtx, _bits: u32) {
+            self.processed.fetch_add(1, Ordering::SeqCst);
+        }
+        fn drain(&mut self, _ctx: &mut WorkerCtx, deadline: Instant) -> Result<(), String> {
+            while self.ready.load(Ordering::SeqCst) == 0 {
+                if Instant::now() > deadline {
+                    return Err("still busy".into());
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_quiesce_that_cannot_drain_leaves_the_worker_running() {
+        let (ready, processed) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+        let w = Worker::spawn(
+            "test-worker",
+            Slow {
+                ready: ready.clone(),
+                processed: processed.clone(),
+            },
+        )
+        .unwrap();
+        let mut q0 = Queue::new(8);
+        q0.ready = true;
+        w.activate(Activation {
+            mem: GuestMemory::from_vec(0, vec![0; 64]),
+            queues: vec![q0],
+            irq: Arc::new(IrqStatus::new(Arc::new(TestIrq::default()))),
+            features: 0,
+        })
+        .unwrap();
+        wait_until(|| processed.load(Ordering::SeqCst) == 1);
+        assert_eq!(
+            w.quiesce(Duration::from_millis(20)),
+            Err("still busy".into())
+        );
+        wait_until(|| processed.load(Ordering::SeqCst) == 2);
+
+        ready.store(1, Ordering::SeqCst);
+        w.quiesce(Duration::from_secs(5)).unwrap();
+        w.doorbell().ring(0);
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(processed.load(Ordering::SeqCst), 2, "quiesced");
     }
 }

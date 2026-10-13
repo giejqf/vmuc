@@ -57,8 +57,8 @@ pub mod status {
     pub const FAILED: u32 = 128;
 }
 
-/// What the driver set up in a transport, for snapshots. The device's
-/// own state, if any, is the device's to save.
+/// What the driver set up in a transport, for snapshots, and the
+/// device's own state.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TransportState {
     pub device_type: u32,
@@ -71,6 +71,9 @@ pub struct TransportState {
     pub config_generation: u32,
     pub shm_sel: u32,
     pub interrupt_status: u32,
+    /// [`VirtioDevice::save_state`].
+    #[serde(default)]
+    pub device: serde_json::Value,
 }
 
 /// One queue as the driver configured it.
@@ -149,7 +152,8 @@ impl MmioTransport {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The registers and queue setup, for a snapshot of a paused VM.
+    /// The registers, queue setup and device state, for a snapshot of a
+    /// paused VM whose devices are quiesced.
     pub fn save(&self) -> TransportState {
         let s = self.lock();
         TransportState {
@@ -173,6 +177,7 @@ impl MmioTransport {
             config_generation: s.config_generation,
             shm_sel: s.shm_sel,
             interrupt_status: self.irq.status(),
+            device: s.device.save_state(),
         }
     }
 
@@ -203,14 +208,43 @@ impl MmioTransport {
             q.desc = c.desc;
             q.avail = c.avail;
             q.used = c.used;
+        }
+        s.device.restore_state(st.device.clone())?;
+        self.reactivate_locked(&mut s)?;
+        self.irq.restore(st.interrupt_status);
+        Ok(())
+    }
+
+    /// Before a snapshot, with the vCPUs paused: see
+    /// [`VirtioDevice::quiesce`]. The setup stays for `save`.
+    pub fn quiesce(&self, timeout: std::time::Duration) -> Result<(), String> {
+        let mut s = self.lock();
+        if s.active {
+            s.device.quiesce(timeout)?;
+            s.active = false;
+        }
+        Ok(())
+    }
+
+    /// Activates a quiesced device again (a snapshot that did not go
+    /// ahead), its queues picking up at their used rings.
+    pub fn reactivate(&self) -> Result<(), String> {
+        let mut s = self.lock();
+        if s.active {
+            return Ok(());
+        }
+        self.reactivate_locked(&mut s)
+    }
+
+    fn reactivate_locked(&self, s: &mut State) -> Result<(), String> {
+        for q in &mut s.queues {
             if q.ready && q.is_valid() {
                 q.resume(&self.mem).map_err(|e| e.to_string())?;
             }
         }
-        if st.status & status::DRIVER_OK != 0 && st.status & status::FEATURES_OK != 0 {
-            self.activate(&mut s);
+        if s.status & status::DRIVER_OK != 0 && s.status & status::FEATURES_OK != 0 {
+            self.activate(s);
         }
-        self.irq.restore(st.interrupt_status);
         Ok(())
     }
 
@@ -400,6 +434,9 @@ mod tests {
         doorbell: Arc<ParkDoorbell>,
         shm: Vec<ShmRegion>,
         queues: Arc<Mutex<Vec<Queue>>>,
+        /// Refuses to quiesce.
+        busy: bool,
+        restored: Arc<Mutex<Option<serde_json::Value>>>,
     }
 
     impl VirtioDevice for Probe {
@@ -423,6 +460,20 @@ mod tests {
         }
         fn reset(&mut self) {
             self.resets.fetch_add(1, Ordering::SeqCst);
+        }
+        fn quiesce(&mut self, _timeout: std::time::Duration) -> Result<(), String> {
+            if self.busy {
+                return Err("busy".into());
+            }
+            self.reset();
+            Ok(())
+        }
+        fn save_state(&self) -> serde_json::Value {
+            serde_json::json!({ "probe": 7 })
+        }
+        fn restore_state(&mut self, state: serde_json::Value) -> Result<(), String> {
+            *self.restored.lock().unwrap() = Some(state);
+            Ok(())
         }
         fn doorbell(&self) -> Arc<dyn Doorbell> {
             self.doorbell.clone()
@@ -496,6 +547,7 @@ mod tests {
         t.irq.signal_used();
         let saved = t.save();
 
+        assert_eq!(saved.device, serde_json::json!({ "probe": 7 }));
         let (fresh, activated, queues) = probe();
         fresh.restore(&saved).unwrap();
         assert_eq!(activated.load(Ordering::SeqCst), 1);
@@ -508,6 +560,60 @@ mod tests {
         let mut wrong = saved.clone();
         wrong.device_type = 2;
         assert!(other.restore(&wrong).is_err());
+    }
+
+    /// A transport with a chain (head 9) taken and not returned.
+    fn holding_a_chain(busy: bool) -> (MmioTransport, GuestMemory, Probe) {
+        let mem = GuestMemory::from_vec(0, vec![0; 0x2000]);
+        let p = Probe {
+            busy,
+            ..Probe::default()
+        };
+        let handles = Probe {
+            activated: p.activated.clone(),
+            resets: p.resets.clone(),
+            queues: p.queues.clone(),
+            restored: p.restored.clone(),
+            ..Probe::default()
+        };
+        let irq = Arc::new(IrqStatus::new(Arc::new(TestIrq::default())));
+        let t = MmioTransport::new(Box::new(p), mem.clone(), irq);
+        bring_up(&t, features::VERSION_1 | features::RING_EVENT_IDX);
+        mem.store_u16_release(0x1802, 1).unwrap();
+        mem.write_obj(0x1800 + 4, 9u16).unwrap();
+        mem.write_obj(0x1000 + 16 * 9, 0x100u64).unwrap();
+        mem.write_obj(0x1000 + 16 * 9 + 8, 4u32).unwrap();
+        let chain = handles.queues.lock().unwrap()[0].pop(&mem).unwrap();
+        assert_eq!(chain.unwrap().head, 9);
+        (t, mem, handles)
+    }
+
+    #[test]
+    fn a_quiesced_device_activates_again_at_its_used_ring() {
+        let (t, mem, p) = holding_a_chain(false);
+        t.quiesce(std::time::Duration::from_secs(1)).unwrap();
+        assert_eq!(p.resets.load(Ordering::SeqCst), 1);
+        let saved = t.save();
+        assert_ne!(saved.status & status::DRIVER_OK, 0, "the setup stays");
+        t.reactivate().unwrap();
+        assert_eq!(p.activated.load(Ordering::SeqCst), 2);
+        let chain = p.queues.lock().unwrap()[0].pop(&mem).unwrap().unwrap();
+        assert_eq!(chain.head, 9, "the unfinished chain is taken again");
+        t.reactivate().unwrap();
+        assert_eq!(p.activated.load(Ordering::SeqCst), 2, "already active");
+        assert!(p.restored.lock().unwrap().is_none(), "not a restore");
+    }
+
+    #[test]
+    fn a_device_that_cannot_quiesce_stays_active() {
+        let (t, _, p) = holding_a_chain(true);
+        assert_eq!(
+            t.quiesce(std::time::Duration::from_secs(1)),
+            Err("busy".into())
+        );
+        t.reactivate().unwrap();
+        assert_eq!(p.activated.load(Ordering::SeqCst), 1, "never stopped");
+        assert_eq!(p.resets.load(Ordering::SeqCst), 0);
     }
 
     #[test]
