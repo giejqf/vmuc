@@ -115,13 +115,19 @@ struct Loop {
     /// receive buffers (a 64 KiB TSO segment needs sixteen 4 KiB ones).
     rx_pending: Option<usize>,
     frame: Vec<u8>,
+    /// After transmitting, the queue is watched until then before the
+    /// guest is asked to kick again (see `rings::TX_POLL`).
+    tx_poll_until: Option<std::time::Instant>,
+    /// When the last frame went out: a frame soon after one is a stream.
+    tx_last: Option<std::time::Instant>,
 }
 
 impl Loop {
     fn run(mut self) {
         let mut events = Events::with_capacity(16);
         loop {
-            let timeout = (!self.may_sleep()).then_some(std::time::Duration::ZERO);
+            let polling = self.tx_poll_until.is_some();
+            let timeout = (polling || !self.may_sleep()).then_some(std::time::Duration::ZERO);
             if let Err(e) = self.poll.poll(&mut events, timeout) {
                 if e.kind() == io::ErrorKind::Interrupted {
                     continue;
@@ -451,6 +457,8 @@ impl Net {
             readable: false,
             rx_pending: None,
             frame: Vec::new(),
+            tx_poll_until: None,
+            tx_last: None,
         };
         let thread = thread::Builder::new()
             .name("virtio-net".into())

@@ -317,6 +317,48 @@ mod with_rings {
     }
 
     #[test]
+    fn a_stream_is_taken_without_kicks_until_it_pauses() {
+        let mut r = ring_rig();
+        let post = |r: &mut RingRig| {
+            let mut f = hdr(0, 0).to_vec();
+            f.extend(frame(1000));
+            let b = r.tx.buffer(&f, f.len() as u32);
+            r.tx.post(&[(b, f.len() as u32, false)]);
+        };
+        // A stray frame: kicks are asked for again at once.
+        post(&mut r);
+        r.net.doorbell().ring(1);
+        take(&mut r.from_vmm);
+        wait_used(&r.tx, 1);
+        let t = Instant::now();
+        while r.tx.avail_event() != 1 {
+            assert!(
+                t.elapsed() < Duration::from_millis(20),
+                "kicks not re-armed"
+            );
+            std::thread::yield_now();
+        }
+        // Another right after: a stream, and the device watches the queue.
+        post(&mut r);
+        r.net.doorbell().ring(1);
+        take(&mut r.from_vmm);
+        for _ in 0..8 {
+            post(&mut r);
+        }
+        for _ in 0..8 {
+            take(&mut r.from_vmm);
+        }
+        wait_used(&r.tx, 10);
+        assert_eq!(r.tx.avail_event(), 1, "no kick asked for meanwhile");
+        // Once the stream pauses, kicks are asked for again.
+        let t = Instant::now();
+        while r.tx.avail_event() != 10 {
+            assert!(t.elapsed() < Duration::from_secs(5), "kicks not re-armed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
     fn receive_waits_in_the_ring_for_buffers_then_delivers() {
         let mut r = ring_rig();
         let mut f = hdr(0, 0).to_vec();

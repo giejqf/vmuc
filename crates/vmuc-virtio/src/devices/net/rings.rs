@@ -7,6 +7,7 @@
 
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use vmuc_net::handoff;
 use vmuc_net::region::Region;
@@ -14,6 +15,20 @@ use vmuc_net::ring::{Consumer, Direction, MAX_FRAME, Next, Producer};
 
 use super::{Delivery, HDR_LEN, Loop, RX, TX, deliver, offload};
 use crate::devices::Segments;
+
+/// How long the transmit queue is watched after a frame of a stream (one
+/// that came within this of the last) before the guest is asked to kick
+/// for the next. A kick is an MMIO write, a VM exit on the guest's
+/// sending vCPU, and a stream sends a frame every few microseconds:
+/// without the watch a guest sending to the host spent a quarter of its
+/// vCPU on kicks (docs/experiments/2026-10-14-net-transmit-kicks.md).
+/// Stray frames do not start a watch. Long enough to be deterministic
+/// in tests.
+const TX_POLL: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_micros(50)
+};
 
 pub(super) struct Rings {
     tx: Producer,
@@ -58,6 +73,7 @@ impl Loop {
         };
         let mem = ctx.mem.clone();
         let socket = self.socket.as_raw_fd();
+        let mut sent = false;
         loop {
             let popped = self
                 .tx_pending
@@ -65,11 +81,25 @@ impl Loop {
                 .or_else(|| ctx.queues[TX].pop(&mem).ok().flatten());
             let Some(chain) = popped else {
                 let _ = ctx.queues[TX].publish_used(&mem);
+                // Kicks stay off while frames keep coming.
+                let now = Instant::now();
+                if sent {
+                    let streaming = self.tx_last.is_some_and(|t| now - t < TX_POLL);
+                    self.tx_last = Some(now);
+                    if streaming {
+                        self.tx_poll_until = Some(now + TX_POLL);
+                        break;
+                    }
+                } else if self.tx_poll_until.is_some_and(|t| now < t) {
+                    break;
+                }
+                self.tx_poll_until = None;
                 if ctx.queues[TX].enable_notification(&mem).unwrap_or(false) {
                     continue;
                 }
                 break;
             };
+            sent = true;
             let readable = Segments::readable(&chain);
             let frame = if self.offload {
                 readable
