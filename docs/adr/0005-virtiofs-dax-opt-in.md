@@ -1,8 +1,7 @@
 # ADR 0005 — virtiofs DAX, per share, opt-in
 
-**Status:** proposed, 2026-10-13. It changes the "File sharing" row of
-plan.md's locked decisions ("no DAX in v0.1"), so it takes effect once a
-maintainer accepts it. Evidence:
+**Status:** accepted, 2026-10-13. It changes the "File sharing" row of
+plan.md's locked decisions ("no DAX in v0.1"; updated). Evidence:
 [E2](../experiments/2026-10-13-e2-virtiofs-dax.md).
 
 ## Context
@@ -38,6 +37,7 @@ host truncation reads zero rather than raising SIGBUS in the guest.
 - Shares that hold large data a guest reads (datasets, build outputs,
   images) can cost the VM nothing to read; the default stays as before.
 - Making DAX the default is a separate decision: it needs a guard against
-  slow host filesystems (or a list of local volumes), and e2e coverage.
+  slow host filesystems (or a list of local volumes). The path is covered
+  end to end (`tests/e2e/tests/dax.rs`).
 - plan.md's "File sharing" row reads "own virtiofs; DAX per share,
-  opt-in (ADR 0005)" once accepted.
+  opt-in".

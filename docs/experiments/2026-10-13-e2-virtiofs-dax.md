@@ -88,8 +88,12 @@ Two things the prototype had to get right, both found live:
    address is stricter than macOS 26.6.2: any range may go where nothing
    is mapped. Unverified on macOS 15, so the rule stays and DAX never
    needs more than "unmap first".
-5. DAX ships opt-in (`mounts[].dax`, default off) pending
+5. DAX ships opt-in (`mounts[].dax`, default off),
    [ADR 0005](../adr/0005-virtiofs-dax-opt-in.md). Its open costs: a
    guest touching a file on a slow or hung host filesystem waits in a
    vCPU (dataless files are excluded, other slow backends are not), and a
    page past a host truncation reads zero instead of raising SIGBUS.
+
+**Follow-up.** ADR 0005 accepted on 2026-10-13, and AGENTS.md's
+`hv_vm_map` rule now says what macOS 26.6.2 does (any range may go where
+nothing is mapped), noted as unverified on macOS 15.

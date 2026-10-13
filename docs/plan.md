@@ -31,7 +31,7 @@ instances, and nothing graphical beyond the terminal.
 | Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). The user-space NAT stack moves to v0.2 as the sudo-free fallback | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames |
 | Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
 | Shell | System `ssh` with `ProxyCommand vmuc _proxy <inst> 22` through a vsock tunnel; `ssh.config` written per instance | No host TCP port, works with any sshd, IDE-friendly |
-| File sharing | Own virtiofs (FUSE-over-virtqueue passthrough), no DAX in v0.1 | Only option without Apple devices; DAX is experiment E2 |
+| File sharing | Own virtiofs (FUSE-over-virtqueue passthrough); DAX per share, opt-in (`mounts[].dax`) | Only option without Apple devices; DAX takes shared-file reads out of the VM's memory but runs file faults on vCPUs (ADR 0005) |
 | Process model | One binary `vmuc`; `vmuc start` spawns detached `vmuc _vmm <name>`; one VM per process | HV allows one VM per process; the entitled binary must own the VM |
 | Control plane | JSON-lines over a unix socket per instance (`vmm.sock`); events appended to `events.jsonl`; status derived from PID liveness + boot-session marker | Lima's design; debuggable with `nc` and `tail` |
 | Host↔agent | Length-prefixed JSON over vsock, one request type per connection; raw byte streams on dedicated vsock connections for tunnels | Simple; control traffic is tiny, bulk traffic bypasses it |
@@ -43,7 +43,7 @@ instances, and nothing graphical beyond the terminal.
 | Forbidden crates | Anything implementing a VMM, hypervisor bindings, virtqueues, virtio devices, a virtiofs/FUSE server, a TCP/IP stack, or wrapping vz/QEMU/libkrun | Requirement 4 read strictly, and the memory manager must own guest memory |
 | License | Apache-2.0 only; `NOTICE` carries attributions for code ported from ArcBox (MIT OR Apache-2.0) | Requirement |
 | Distribution | Homebrew formula in our own tap, ad-hoc codesign with `vmuc.entitlements` at install; kernel as a formula resource | Lima and QEMU prove it |
-| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots, DAX, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
+| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots, DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
 
 ## Repository layout
 
@@ -400,7 +400,7 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
   (ADR 0003).
 - E2 virtiofs DAX via per-file `hv_vm_map` (respect the no-overlap rule):
   done 2026-10-13 (`docs/experiments/2026-10-13-e2-virtiofs-dax.md`); DAX
-  lands opt-in per share, pending ADR 0005.
+  lands opt-in per share (ADR 0005).
 - E3 16 KiB guest pages: fewer stage-2 entries, 32 MiB reporting
   granularity, userspace compatibility survey.
 - E4 inotify propagation for writable mounts.

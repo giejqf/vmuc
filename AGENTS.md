@@ -127,9 +127,13 @@ calls `hv_*`.
   prompt, an iCloud file for its download, a FIFO for a writer. Such
   calls go to threads that hold no guest memory and are not joined
   (virtio-fs runs requests on a pool for this reason).
-- `hv_vm_map` does not allow overlapping remaps of a *different* host
-  range into a live IPA range. Unmap/map of a sub-range is fine only
-  when the **same** host address comes back.
+- `hv_vm_map` refuses a map over a live mapping: unmap first. Once a
+  range is unmapped, any host range may go there, file-backed or
+  anonymous, also into a hole of a larger mapping (macOS 26.6.2,
+  `crates/vmuc-hv/tests/dax.rs`; unverified on macOS 15, so the memory
+  manager still maps the same host address back). It also refuses
+  read-only host mappings: DAX maps files shared from a read-write
+  descriptor, read-only in stage 2.
 - Every `unsafe` block has a `// SAFETY:` comment naming the invariant.
 
 ## Memory manager invariants
