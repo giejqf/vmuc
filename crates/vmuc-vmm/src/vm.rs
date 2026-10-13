@@ -309,11 +309,22 @@ impl VmBuilder {
     }
 
     /// Builds the VM from a snapshot in `dir` instead of booting: guest
-    /// RAM, then the devices (whose queues pick up from RAM), then the
-    /// vCPUs, created, given the GIC state and resumed. The machine must
+    /// RAM, the vCPUs (created, parked), the GIC state, then the devices
+    /// (whose queues pick up from RAM), and the vCPUs resume. The machine must
     /// have been built as the snapshotted one was (same CPUs, RAM and
     /// devices, in the same order).
     pub fn restore(self, dir: &Path, ram: RamRestore) -> Result<Vm, VmError> {
+        self.restore_with(dir, ram, || Ok(()))
+    }
+
+    /// [`VmBuilder::restore`], calling `before_run` once everything is
+    /// loaded and before any vCPU runs; its error abandons the restore.
+    pub fn restore_with(
+        self,
+        dir: &Path,
+        ram: RamRestore,
+        before_run: impl FnOnce() -> std::io::Result<()>,
+    ) -> Result<Vm, VmError> {
         let bad = |e: std::io::Error| VmError::Snapshot(e.to_string());
         let (state, gic_state) = snapshot::State::read(dir).map_err(bad)?;
         if state.cpus != self.config.cpus
@@ -345,16 +356,19 @@ impl VmBuilder {
                 self.ram.map_into(&self.hv)?;
             }
         }
-        for (t, st) in self.transports.iter().zip(&state.transports) {
+        let vm = self.launch()?;
+        // The GIC first: restoring it sets every SPI's level as saved, so a
+        // line a device raised before would be lowered behind its back.
+        Gic::restore_state(&gic_state)?;
+        for (t, st) in vm.transports.iter().zip(&state.transports) {
             t.restore(st).map_err(VmError::Snapshot)?;
         }
-        for (name, dev) in &self.stateful {
+        for (name, dev) in &vm.stateful {
             let st = state.devices.get(*name).cloned().unwrap_or_default();
             dev.restore(st)
                 .map_err(|e| VmError::Snapshot(format!("{name}: {e}")))?;
         }
-        let vm = self.launch()?;
-        Gic::restore_state(&gic_state)?;
+        before_run().map_err(bad)?;
         let shift = vmuc_hv::state::host_counter().wrapping_sub(state.paused_at);
         for (index, cpu) in state.vcpus.into_iter().enumerate() {
             match cpu {
