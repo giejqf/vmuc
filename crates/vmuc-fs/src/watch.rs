@@ -66,13 +66,13 @@ pub struct Change {
 /// The changes in a batch of host events that the guest can see, in
 /// order. What is there now decides the kind, since the flags pile up:
 /// a path that is gone was removed, one that exists and is new to the
-/// guest was created, and a rename's two names (FSEvents reports the old
-/// one, then the new one) become a move.
+/// guest was created (and, with data, written), and a rename's two names
+/// (FSEvents reports the old one, then the new one) become a move.
 pub fn classify(root: &Path, seen: &Seen, batch: &[HostEvent]) -> Vec<Change> {
     let mut out = Vec::new();
     let mut dup = HashSet::new();
-    // Directories this batch creates: the guest knows them by the time
-    // their contents are replayed.
+    // What this batch creates: the guest knows it by the time the later
+    // events are replayed (a directory's contents, a file's next write).
     let mut created: HashSet<&Path> = HashSet::new();
     for e in batch {
         let Some((rel, parent)) = e
@@ -92,27 +92,37 @@ pub fn classify(root: &Path, seen: &Seen, batch: &[HostEvent]) -> Vec<Change> {
             None if renamed => ChangeKind::MovedFrom,
             None => ChangeKind::Removed,
             Some(_) if renamed => ChangeKind::MovedTo,
-            Some(m) if e.flags & flag::CREATED != 0 && !seen.knows((m.dev(), m.ino())) => {
+            Some(m)
+                if e.flags & flag::CREATED != 0
+                    && !created.contains(rel)
+                    && !seen.knows((m.dev(), m.ino())) =>
+            {
                 ChangeKind::Created
             }
             Some(m) if e.flags & flag::MODIFIED != 0 && !m.is_dir() => ChangeKind::Modified,
             Some(_) if e.flags & flag::META != 0 => ChangeKind::Attrib,
             Some(_) => continue,
         };
-        if matches!(kind, ChangeKind::Created | ChangeKind::MovedTo)
-            && now.as_ref().is_some_and(std::fs::Metadata::is_dir)
-        {
+        if matches!(kind, ChangeKind::Created | ChangeKind::MovedTo) {
             created.insert(rel);
         }
         let Some(path) = rel.to_str() else {
             continue;
         };
-        let change = Change {
-            kind,
-            path: path.to_owned(),
-        };
-        if dup.insert(change.clone()) {
-            out.push(change);
+        // A file created with data was also written, as a local one raises
+        // MODIFY after CREATE; FSEvents may fold later writes in as well.
+        let written = kind == ChangeKind::Created
+            && e.flags & flag::MODIFIED != 0
+            && now.as_ref().is_some_and(|m| !m.is_dir());
+        let also = written.then_some(ChangeKind::Modified);
+        for kind in std::iter::once(kind).chain(also) {
+            let change = Change {
+                kind,
+                path: path.to_owned(),
+            };
+            if dup.insert(change.clone()) {
+                out.push(change);
+            }
         }
     }
     pair_moves(&mut out);

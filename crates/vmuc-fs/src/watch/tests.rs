@@ -68,6 +68,7 @@ fn what_is_there_now_decides_the_kind() {
         s.classify(&batch),
         [
             ch(ChangeKind::Created, "new.txt"),
+            ch(ChangeKind::Modified, "new.txt"),
             ch(ChangeKind::Modified, "known.txt"),
             ch(ChangeKind::Removed, "gone.txt"),
         ]
@@ -104,6 +105,26 @@ fn only_directories_the_guest_has_seen_count() {
         flags: flag::MODIFIED,
     };
     assert_eq!(s.classify(&[outside]), []);
+}
+
+#[test]
+fn a_file_created_and_written_is_both_however_folded() {
+    let s = Share::new();
+    fs::write(s.root().join("f"), "two").unwrap();
+    fs::create_dir(s.root().join("d")).unwrap();
+    let both = [ch(ChangeKind::Created, "f"), ch(ChangeKind::Modified, "f")];
+    // FSEvents folds a write 300 ms later into the creation's event...
+    let folded = [s.ev("f", flag::CREATED | flag::MODIFIED | flag::INODE_META_MOD)];
+    assert_eq!(s.classify(&folded), both);
+    // ...or reports it separately, keeping the created flag on it.
+    let apart = [
+        s.ev("f", flag::CREATED | flag::MODIFIED),
+        s.ev("f", flag::CREATED | flag::MODIFIED),
+    ];
+    assert_eq!(s.classify(&apart), both);
+    // A directory is only created.
+    let dir = [s.ev("d", flag::CREATED | flag::MODIFIED)];
+    assert_eq!(s.classify(&dir), [ch(ChangeKind::Created, "d")]);
 }
 
 #[test]
