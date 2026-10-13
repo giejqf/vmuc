@@ -9,6 +9,8 @@
 //! (`guest/kernel/initramfs/busybox.sh`). They are `#[ignore]`d; run them
 //! with `cargo test -p vmuc-e2e -- --ignored --test-threads=1`.
 
+pub mod cli;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
