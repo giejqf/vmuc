@@ -76,11 +76,26 @@ fn key(st: &libc::stat) -> (u64, u64) {
     (st.st_dev as u64, st.st_ino as u64)
 }
 
+/// The host files a guest holds a node for: what it can have cached or be
+/// watching.
+#[derive(Debug, Clone)]
+pub struct Seen(Arc<Mutex<Inodes>>);
+
+impl Seen {
+    /// Whether the guest knows the file with this `(dev, ino)`.
+    pub fn knows(&self, key: (u64, u64)) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(key)
+    }
+}
+
 #[derive(Debug)]
 pub struct Passthrough {
     root: PathBuf,
     read_only: bool,
-    inodes: Mutex<Inodes>,
+    inodes: Arc<Mutex<Inodes>>,
     /// Read on every READ and WRITE from several request threads.
     handles: RwLock<HashMap<u64, Arc<Handle>>>,
     next_fh: AtomicU64,
@@ -97,7 +112,7 @@ impl Passthrough {
         Ok(Self {
             root,
             read_only,
-            inodes: Mutex::new(Inodes::new((meta.dev(), meta.ino()))),
+            inodes: Arc::new(Mutex::new(Inodes::new((meta.dev(), meta.ino())))),
             handles: RwLock::new(HashMap::new()),
             next_fh: AtomicU64::new(1),
         })
@@ -110,6 +125,11 @@ impl Passthrough {
     /// The shared directory (canonical).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The files the guest knows, for watching the share from the host.
+    pub fn seen(&self) -> Seen {
+        Seen(Arc::clone(&self.inodes))
     }
 
     fn inodes(&self) -> MutexGuard<'_, Inodes> {

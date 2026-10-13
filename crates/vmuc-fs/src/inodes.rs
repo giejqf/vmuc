@@ -41,6 +41,10 @@ impl Inodes {
         self.by_id.get(&id)
     }
 
+    pub fn contains_key(&self, key: (u64, u64)) -> bool {
+        self.by_key.contains_key(&key)
+    }
+
     /// The node for a file just looked up, counting one more lookup. A
     /// known file (another hard link, or the same name again) keeps its ID
     /// and takes the most recent path.
