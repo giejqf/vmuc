@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use std::time::{Duration, Instant};
-use vmuc_e2e::cli::{root, run, vmuc};
+use vmuc_e2e::cli::{Cleanup, root, run, vmuc};
 
 #[test]
 #[ignore = "boots Ubuntu: Apple silicon only"]
@@ -22,6 +22,7 @@ fn create_start_shell_stop_delete() {
         .tempdir_in("/tmp")
         .unwrap();
     let h = home.path();
+    let _cleanup = Cleanup::new(bin, h, "e2e");
     // Mounted at the same path in the guest; not under /tmp, which is a
     // symlink on macOS.
     let share = tempfile::tempdir_in(root().join("target")).unwrap();

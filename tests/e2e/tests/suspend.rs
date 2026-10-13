@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use vmuc_e2e::cli::{WATCHER, root, run, vmuc};
+use vmuc_e2e::cli::{Cleanup, WATCHER, root, run, vmuc};
 
 fn shell(bin: &Path, home: &Path, script: &str) -> String {
     let out = run(bin, home, &["shell", "susp", "--", script]);
@@ -37,6 +37,7 @@ fn a_suspended_instance_carries_on_where_it_was() {
         .tempdir_in("/tmp")
         .unwrap();
     let h = home.path();
+    let _cleanup = Cleanup::new(bin, h, "susp");
     let share = tempfile::tempdir_in(root().join("target")).unwrap();
     let w = share.path().canonicalize().unwrap().join("w");
     std::fs::create_dir(&w).unwrap();

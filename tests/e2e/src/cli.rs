@@ -47,6 +47,35 @@ pub fn vmuc() -> PathBuf {
     bin
 }
 
+/// Force-stops the instance `name` in `home` when dropped, also when the
+/// test fails: otherwise its VM runs on behind the deleted home. Declare
+/// it after the home's `TempDir`, so it goes first.
+pub struct Cleanup {
+    bin: PathBuf,
+    home: PathBuf,
+    name: String,
+}
+
+impl Cleanup {
+    pub fn new(bin: &Path, home: &Path, name: &str) -> Self {
+        Self {
+            bin: bin.to_owned(),
+            home: home.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = Command::new(&self.bin)
+            .args(["stop", "--force", &self.name])
+            .env("VMUC_HOME", &self.home)
+            .stdin(std::process::Stdio::null())
+            .output();
+    }
+}
+
 /// Runs `vmuc args` with `VMUC_HOME=home`, echoing what it printed.
 pub fn run(bin: &Path, home: &Path, args: &[&str]) -> Output {
     let out = Command::new(bin)

@@ -7,7 +7,7 @@
 
 use std::process::Command;
 
-use vmuc_e2e::cli::{root, run, vmuc};
+use vmuc_e2e::cli::{Cleanup, root, run, vmuc};
 
 fn sha256(path: &std::path::Path) -> String {
     let out = Command::new("shasum")
@@ -32,6 +32,7 @@ fn a_dax_share_maps_files_instead_of_caching_them() {
         .tempdir_in("/tmp")
         .unwrap();
     let h = home.path();
+    let _cleanup = Cleanup::new(bin, h, "dax");
     let share = tempfile::tempdir_in(root().join("target")).unwrap();
     // Canonical: the guest's /proc/mounts lists the resolved path.
     let canonical = share.path().canonicalize().unwrap();

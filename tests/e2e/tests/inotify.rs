@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use vmuc_e2e::cli::{WATCHER, root, run, vmuc};
+use vmuc_e2e::cli::{Cleanup, WATCHER, root, run, vmuc};
 
 #[test]
 #[ignore = "boots Ubuntu: Apple silicon only"]
@@ -18,6 +18,7 @@ fn host_changes_reach_guest_watchers_once() {
         .tempdir_in("/tmp")
         .unwrap();
     let h = home.path();
+    let _cleanup = Cleanup::new(bin, h, "notify");
     let share = tempfile::tempdir_in(root().join("target")).unwrap();
     let s = share.path().canonicalize().unwrap();
     let w = s.join("w");

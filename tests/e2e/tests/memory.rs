@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use vmuc_e2e::cli::Cleanup;
+
 fn vmuc() -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let ok = Command::new(env!("CARGO"))
@@ -67,6 +69,7 @@ fn freed_guest_memory_returns_to_the_host() {
         .tempdir_in("/tmp")
         .unwrap();
     let h = home.path();
+    let _cleanup = Cleanup::new(&bin, h, "mem");
     ok(
         &bin,
         h,
