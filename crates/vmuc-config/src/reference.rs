@@ -323,11 +323,6 @@ const ADVANCED: &[Field] = &[
         "[] (the DNS server vmnet's DHCP hands out: the host's resolver)",
         "Nameservers written to the guest's resolv.conf instead.",
     ),
-    f(
-        "hostResolver",
-        "true",
-        "Reserved for vmuc's own user-space network (v0.2); ignored with vmnet, whose DHCP already points the guest at the host's resolver.",
-    ),
 ];
 
 /// Every key, in reference order.

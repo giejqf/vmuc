@@ -76,4 +76,3 @@ left out falls back to the next layer: built-in default <
 | `timezone` | the host's zone, else "UTC" | IANA zone name applied inside the guest. |
 | `message` | "" | Printed after `vmuc start`. |
 | `dns` | [] (the DNS server vmnet's DHCP hands out: the host's resolver) | Nameservers written to the guest's resolv.conf instead. |
-| `hostResolver` | true | Reserved for vmuc's own user-space network (v0.2); ignored with vmnet, whose DHCP already points the guest at the host's resolver. |

@@ -460,8 +460,6 @@ pub struct InstanceConfig {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub dns: Vec<IpAddr>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub host_resolver: Option<bool>,
 }
 
 impl InstanceConfig {

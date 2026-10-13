@@ -183,8 +183,3 @@ message: null
 # Built-in default: [] (the DNS server vmnet's DHCP hands out: the
 # host's resolver)
 dns: null
-
-# Reserved for vmuc's own user-space network (v0.2); ignored with vmnet,
-# whose DHCP already points the guest at the host's resolver.
-# Built-in default: true
-hostResolver: null

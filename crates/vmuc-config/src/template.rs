@@ -349,7 +349,6 @@ fn merge(child: InstanceConfig, base: InstanceConfig) -> InstanceConfig {
         } else {
             child.dns
         },
-        host_resolver: child.host_resolver.or(base.host_resolver),
     }
 }
 

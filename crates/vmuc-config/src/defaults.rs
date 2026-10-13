@@ -340,7 +340,6 @@ pub struct ResolvedConfig {
     pub timezone: String,
     pub message: String,
     pub dns: Vec<IpAddr>,
-    pub host_resolver: bool,
 }
 
 impl ResolvedConfig {
@@ -481,7 +480,6 @@ pub fn fill_defaults(
             .unwrap_or_else(|| builtin.timezone()),
         message: l.pick(|c| c.message.as_ref()).unwrap_or_default(),
         dns: l.first_non_empty(|c| &c.dns),
-        host_resolver: l.pick(|c| c.host_resolver.as_ref()).unwrap_or(true),
     })
 }
 
@@ -781,7 +779,6 @@ mod tests {
         assert_eq!(r.network.mac_address, mac_address_for("demo"));
         assert!(!r.ssh.load_dot_ssh_pub_keys);
         assert!(!r.ssh.forward_agent);
-        assert!(r.host_resolver);
         assert_eq!(r.dns, [] as [IpAddr; 0]);
         assert_eq!(r.images, [] as [ResolvedImage; 0]);
         assert_eq!(r.port_forwards, vec![ResolvedPortForward::catch_all()]);
@@ -1085,10 +1082,9 @@ mod tests {
             },
             timezone: Some("Asia/Tokyo".into()),
             message: Some("hi".into()),
-            host_resolver: Some(false),
             ..Default::default()
         };
-        let d = yaml("cpus: 1\nuser: {name: other}\nhostResolver: true");
+        let d = yaml("cpus: 1\nuser: {name: other}");
         let r = fill_defaults("x", &y, Some(&d), None, &builtin()).unwrap();
         assert_eq!(r.cpus, 7);
         assert!(r.ssh.load_dot_ssh_pub_keys && r.ssh.forward_agent);
@@ -1098,6 +1094,5 @@ mod tests {
         assert_eq!(r.user.comment, "Dev");
         assert_eq!(r.timezone, "Asia/Tokyo");
         assert_eq!(r.message, "hi");
-        assert!(!r.host_resolver);
     }
 }
