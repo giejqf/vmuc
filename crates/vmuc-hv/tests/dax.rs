@@ -276,6 +276,41 @@ fn past_eof() -> String {
     exit
 }
 
+/// A file only readable to us: whether a read-only shared mapping can go
+/// into the VM, and whether a private writable one (mapped read-only in
+/// stage 2) sees later host writes. Returns (shared result, private page
+/// after a host write).
+fn read_only_file() -> (String, u64) {
+    let file = Scratch::new("ro", CHUNK, 0);
+    let ro = File::open(&file.path).unwrap();
+    let map_ro = |prot, flags| {
+        // SAFETY: a fresh mapping of a file we opened; checked below.
+        let p = unsafe { libc::mmap(std::ptr::null_mut(), CHUNK, prot, flags, ro.as_raw_fd(), 0) };
+        assert_ne!(p, libc::MAP_FAILED);
+        p.cast::<u8>()
+    };
+    let shared = map_ro(libc::PROT_READ, libc::MAP_SHARED);
+    let read = MemoryPermission::READ | MemoryPermission::EXEC;
+    // SAFETY: mapped until the munmap below.
+    let shared_result = format!("{:?}", unsafe { HvVm::remap(shared, WIN, CHUNK, read) });
+    HvVm::unmap(WIN, CHUNK).ok();
+    let private = map_ro(libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE);
+    // SAFETY: as above.
+    unsafe { HvVm::remap(private, WIN, CHUNK, read).unwrap() };
+    assert_eq!(load_one(WIN + 4096 * 3).unwrap(), 3);
+    file.file
+        .write_all_at(&0xbeef_u64.to_le_bytes(), 4096 * 3)
+        .unwrap();
+    let after = load_one(WIN + 4096 * 3).unwrap();
+    HvVm::unmap(WIN, CHUNK).unwrap();
+    // SAFETY: our own mappings, out of the VM.
+    unsafe {
+        libc::munmap(shared.cast(), CHUNK);
+        libc::munmap(private.cast(), CHUNK);
+    }
+    (shared_result, after)
+}
+
 /// Average cost of mapping and unmapping 2 MiB of a file.
 fn map_cost() -> std::time::Duration {
     let file = Scratch::new("cost", 32 * CHUNK, 0);
@@ -337,6 +372,11 @@ fn files_map_into_the_guest() {
     assert!(
         exit.contains("DataAbort"),
         "a load past EOF should be a data abort"
+    );
+    let (shared, after) = read_only_file();
+    eprintln!("read-only shared mapping into the VM: {shared}");
+    eprintln!(
+        "private mapping of a read-only fd, after a host write the guest reads {after:#x} (0xbeef = coherent)"
     );
     eprintln!("2 MiB map + unmap: {:?} per pair", map_cost());
     drop(vm);
