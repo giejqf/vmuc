@@ -22,8 +22,8 @@ use vmuc_fs::server::Server;
 
 use crate::bus::put_le;
 use crate::device::{
-    Activation, Doorbell, HOST_EVENT, ParkDoorbell, QueueHandler, VirtioDevice, Worker, WorkerCtx,
-    device_type, features,
+    Activation, Doorbell, HOST_EVENT, ParkDoorbell, QueueHandler, ShmRegion, VirtioDevice, Worker,
+    WorkerCtx, device_type, features,
 };
 use crate::devices::Segments;
 
@@ -202,6 +202,8 @@ impl QueueHandler for Handler {
 pub struct Fs {
     config: [u8; TAG_LEN + 4],
     worker: Worker,
+    /// The DAX window (shared memory region 0), when there is one.
+    window: Option<ShmRegion>,
 }
 
 impl Fs {
@@ -214,7 +216,19 @@ impl Fs {
         let wake = Arc::new(OnceLock::new());
         let worker = Worker::spawn("virtio-fs", Handler::new(server, &wake)?)?;
         let _ = wake.set(worker.doorbell());
-        Ok(Self { config, worker })
+        Ok(Self {
+            config,
+            worker,
+            window: None,
+        })
+    }
+
+    /// Offers a DAX window at guest physical `base` (shared memory region
+    /// 0, `VIRTIO_FS_SHMCAP_ID_CACHE`); the server maps into it.
+    #[must_use]
+    pub fn with_window(mut self, base: u64, len: u64) -> Self {
+        self.window = Some(ShmRegion { id: 0, base, len });
+        self
     }
 }
 
@@ -244,6 +258,9 @@ impl VirtioDevice for Fs {
     }
     fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.worker.doorbell()
+    }
+    fn shm_regions(&self) -> Vec<ShmRegion> {
+        self.window.into_iter().collect()
     }
 }
 
