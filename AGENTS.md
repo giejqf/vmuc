@@ -118,6 +118,11 @@ calls `hv_*`.
 - Interrupts go through Apple's in-kernel GICv3 (`hv_gic_*`). Asserting
   an SPI with `hv_gic_set_spi` **is** the whole wake; never follow it
   with `hv_vcpus_exit`. `hv_vcpus_exit` is for stop and pause only.
+- An `hv_vcpus_exit` can be used up by an exit already on its way (an
+  MMIO access, say): the vCPU handles that exit and enters the guest
+  again. So a vCPU checks the stop and pause flags before every
+  `hv_vcpu_run`, and whoever stops or pauses keeps kicking (every 2 ms)
+  until every vCPU has left (docs/logs/2026-10-13-lost-vcpu-cancels.md).
 - SPIs are level-triggered; the device deasserts on ACK.
 - Teardown order is a contract: join vCPU threads → join every worker
   that holds a guest-memory reference → destroy the GIC →
