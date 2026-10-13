@@ -14,7 +14,7 @@ use tracing::{debug, error, warn};
 use vmuc_hv::{ExceptionClass, HvResult, HvVcpu, MmioInfo, VcpuExit, reg, sys_reg};
 
 use crate::layout::mpidr;
-use crate::machine::{Machine, VmExit};
+use crate::machine::{CpuSnapshot, Machine, PowerOn, VmExit};
 use crate::psci::{self, PsciCall, ret};
 
 /// EL1h, D, A, I and F masked: the arm64 boot protocol's entry state.
@@ -39,7 +39,7 @@ pub fn run_vcpu(index: usize, m: &Machine, created: impl FnOnce(HvResult<u64>)) 
         return created(Err(e));
     }
     let reset_sctlr = vcpu.get_sys_reg(sys_reg::HV_SYS_REG_SCTLR_EL1).unwrap_or(0);
-    m.register_vcpu(vcpu.id());
+    m.register_vcpu(index, vcpu.id());
     created(Ok(vcpu.id()));
 
     let mut ctx = Ctx {
@@ -47,20 +47,25 @@ pub fn run_vcpu(index: usize, m: &Machine, created: impl FnOnce(HvResult<u64>)) 
         m,
         index,
     };
-    while let Some((entry, context)) = m.wait_power_on(index) {
-        let start = [
-            (reg::HV_REG_PC, entry),
-            (reg::HV_REG_X0, context),
-            (reg::HV_REG_X1, 0),
-            (reg::HV_REG_X2, 0),
-            (reg::HV_REG_X3, 0),
-            (reg::HV_REG_CPSR, CPSR_EL1H_MASKED),
-        ];
-        let reset = start
+    while let Some(on) = m.wait_power_on(index) {
+        let ready = match on {
+            PowerOn::Start { entry, context } => [
+                (reg::HV_REG_PC, entry),
+                (reg::HV_REG_X0, context),
+                (reg::HV_REG_X1, 0),
+                (reg::HV_REG_X2, 0),
+                (reg::HV_REG_X3, 0),
+                (reg::HV_REG_CPSR, CPSR_EL1H_MASKED),
+            ]
             .iter()
             .try_for_each(|&(r, v)| vcpu.set_reg(r, v))
-            .and_then(|()| vcpu.set_sys_reg(sys_reg::HV_SYS_REG_SCTLR_EL1, reset_sctlr));
-        if let Err(e) = reset {
+            .and_then(|()| vcpu.set_sys_reg(sys_reg::HV_SYS_REG_SCTLR_EL1, reset_sctlr)),
+            PowerOn::Resume {
+                state,
+                offset_shift,
+            } => vcpu.restore(&state, state.vtimer_offset.wrapping_add(offset_shift)),
+        };
+        if let Err(e) = ready {
             m.request_exit(VmExit::Crashed(format!("vCPU {index}: reset: {e}")));
             break;
         }
@@ -84,6 +89,20 @@ impl Ctx<'_> {
     /// (`Err` with the reason, `Stopped` when someone else asked).
     fn run_until_off(&mut self) -> Result<(), VmExit> {
         loop {
+            // Before every entry, not only on a cancel: an exit for MMIO
+            // can come back instead of the cancel a pause asked for.
+            if self.m.pause_requested() {
+                let state = self
+                    .vcpu
+                    .capture()
+                    .map_err(|e| self.crash(&format!("capture: {e}")))?;
+                if !self
+                    .m
+                    .report_paused(self.index, CpuSnapshot::Running(Box::new(state)))
+                {
+                    return Err(VmExit::Stopped);
+                }
+            }
             let exit = self
                 .vcpu
                 .run()
