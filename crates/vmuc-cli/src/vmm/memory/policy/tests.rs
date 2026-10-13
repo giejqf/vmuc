@@ -137,3 +137,40 @@ fn half_an_hour_of_critical_pressure_keeps_an_idle_guest_above_its_floor() {
         t += POLL;
     }
 }
+
+/// ArcBox's second incident: on a pressured host the balloon oscillated.
+/// Once the guest stalls and gets its memory back, the balloon stays down
+/// for the rest of that bout of pressure, and may return after calm.
+#[test]
+fn after_a_stall_the_balloon_waits_for_calm() {
+    let t0 = Instant::now();
+    let mut p = Policy::new(true, 256 * MIB, t0);
+    let crit = |now, balloon, stall| Round {
+        balloon,
+        stall,
+        last_reclaim: Some(now),
+        ..round(now, PressureLevel::Critical)
+    };
+    assert!(matches!(
+        p.step(&crit(t0, 0, None))[..],
+        [Action::Balloon(_, Why::Critical)]
+    ));
+    let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(
+        p.step(&crit(t1, GIB, Some(40.0))),
+        [Action::Balloon(0, Why::Stalling)]
+    );
+    // Ten minutes more of critical pressure: no inflation.
+    let mut t = t1;
+    while t < t1 + Duration::from_mins(10) {
+        t += POLL;
+        assert_eq!(p.step(&crit(t, 0, None)), []);
+    }
+    // Calm, then pressure again: the balloon may inflate.
+    p.step(&round(t + POLL, PressureLevel::Normal));
+    let again = p.step(&crit(t + 2 * POLL, 0, None));
+    assert!(
+        matches!(again[..], [Action::Balloon(_, Why::Critical)]),
+        "{again:?}"
+    );
+}

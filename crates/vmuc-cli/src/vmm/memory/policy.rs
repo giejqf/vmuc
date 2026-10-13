@@ -12,7 +12,9 @@
 //!   most every [`BALLOON_EVERY`];
 //! - deflate fully once the host has been calm for
 //!   [`CALM_BEFORE_DEFLATE`], or at once when the guest stalls on memory
-//!   (PSI `some` over [`STALL_PERCENT`] in the last 10 s).
+//!   (PSI `some` over [`STALL_PERCENT`] in the last 10 s); after a stall,
+//!   inflate again only once the host has been calm, or balloon and stalls
+//!   take turns (E1: ten episodes in five minutes without this rule).
 
 use std::time::{Duration, Instant};
 
@@ -61,6 +63,8 @@ pub struct Policy {
     min_available: u64,
     last_balloon: Option<Instant>,
     calm_since: Instant,
+    /// The guest stalled under the balloon during this bout of pressure.
+    stalled: bool,
 }
 
 impl Policy {
@@ -70,6 +74,7 @@ impl Policy {
             min_available,
             last_balloon: None,
             calm_since: now,
+            stalled: false,
         }
     }
 
@@ -77,10 +82,12 @@ impl Policy {
         let mut out = Vec::new();
         if r.balloon > 0 && r.stall.is_some_and(|s| s > STALL_PERCENT) {
             self.last_balloon = Some(r.now);
+            self.stalled = true;
             out.push(Action::Balloon(0, Why::Stalling));
             return out;
         }
         if r.level == PressureLevel::Normal {
+            self.stalled = false;
             if r.balloon > 0 && r.now.duration_since(self.calm_since) >= CALM_BEFORE_DEFLATE {
                 out.push(Action::Balloon(0, Why::Calm));
             }
@@ -93,6 +100,7 @@ impl Policy {
             out.push(Action::Reclaim);
         }
         let may_balloon = self.pressure_balloon
+            && !self.stalled
             && r.level == PressureLevel::Critical
             && self
                 .last_balloon
