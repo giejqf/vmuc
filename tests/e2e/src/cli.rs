@@ -4,6 +4,23 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// An inotify watcher on one directory, for `python3 watch.py DIR OUT`
+/// in the guest (the cloud image has no inotify-tools): one `MASK NAME`
+/// line per event.
+pub const WATCHER: &str = r#"
+import ctypes, os, struct, sys
+libc = ctypes.CDLL(None, use_errno=True)
+fd = libc.inotify_init()
+libc.inotify_add_watch(fd, sys.argv[1].encode(), 0x2 | 0x40 | 0x80 | 0x100 | 0x200)
+out = open(sys.argv[2], "a", buffering=1)
+while True:
+    buf, i = os.read(fd, 65536), 0
+    while i < len(buf):
+        _, mask, _, n = struct.unpack_from("iIII", buf, i)
+        out.write(f"{mask & 0xfff:#x} {buf[i + 16:i + 16 + n].rstrip(bytes(1)).decode()}\n")
+        i += 16 + n
+"#;
+
 /// The repository root.
 pub fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
