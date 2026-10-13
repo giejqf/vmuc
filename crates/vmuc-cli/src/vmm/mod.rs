@@ -7,8 +7,9 @@
 //! pid, serves `vmm.sock`, probes readiness into `events.jsonl`, and on
 //! SIGTERM/SIGINT asks the guest to power off (a second signal forces
 //! it). A guest reset re-executes the process for a clean VM; the pid
-//! stays the same. `vmuc suspend` ends the process the other way: the
-//! guest is saved into the instance (ADR 0007).
+//! stays the same. A suspended instance is resumed instead of booted,
+//! into the same machine, and `vmuc suspend` ends the process the other
+//! way (ADR 0007).
 
 mod forward;
 mod memory;
@@ -24,9 +25,9 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use vmuc_config::VmucHome;
 use vmuc_config::paths::instance as files;
 use vmuc_proto::{AgentRequest, EventKind, Forward, InstanceStatus, Phase};
@@ -38,6 +39,7 @@ use vmuc_virtio::devices::vsock::{GUEST_CID, Vsock, VsockConnector};
 use vmuc_vmm::loader::MappedFile;
 use vmuc_vmm::machine::Machine;
 use vmuc_vmm::memory::ReclaimStats;
+use vmuc_vmm::snapshot::RamRestore;
 use vmuc_vmm::{ConsoleOut, Vm, VmBuilder, VmConfig, VmExit};
 
 use crate::assets;
@@ -185,21 +187,31 @@ fn boot_and_wait(
     inst: &Instance,
     signals: signals::Blocked,
 ) -> anyhow::Result<Ended> {
+    let spawned = Instant::now();
     let resolved = inst.resolved(home)?;
     let events = EventLog::create(&inst.dir)?;
-    let agent = assets::agent()?;
+    let resume = crate::suspend::load(&inst.dir).context("reading the suspended state")?;
     let fs_shares = shares::open(&resolved, &events);
     let mut shape = suspend::shape(&resolved, &fs_shares);
-    let mounts: Vec<_> = fs_shares.iter().map(|s| s.mount.clone()).collect();
+    if let Some(s) = &resume {
+        suspend::check(&inst.name, &s.machine, &shape)?;
+    }
     let watched = fs_shares
         .iter()
         .filter(|s| s.mount.writable)
         .map(shares::Share::watched)
         .collect();
-    let boot_id = instance::write_seed(home, inst, &resolved, Some(&agent), &mounts)?;
-    events.push(EventKind::Booting {
-        boot_id: boot_id.clone(),
-    });
+    let boot_id = if let Some(s) = &resume {
+        s.boot_id.clone()
+    } else {
+        let agent = assets::agent()?;
+        let mounts: Vec<_> = fs_shares.iter().map(|s| s.mount.clone()).collect();
+        let boot_id = instance::write_seed(home, inst, &resolved, Some(&agent), &mounts)?;
+        events.push(EventKind::Booting {
+            boot_id: boot_id.clone(),
+        });
+        boot_id
+    };
     let mut info = instance::boot_info(inst, &resolved)?;
     // Experiments and benchmarks append kernel parameters without editing
     // the instance (e.g. page_reporting.page_reporting_order=N).
@@ -208,7 +220,13 @@ fn boot_and_wait(
         info.cmdline.push_str(&extra.to_string_lossy());
     }
 
-    let log = File::create(inst.dir.join(files::CONSOLE_LOG))?;
+    // A resumed guest's console carries on in the same log.
+    let log = File::options()
+        .create(true)
+        .write(true)
+        .append(resume.is_some())
+        .truncate(resume.is_none())
+        .open(inst.dir.join(files::CONSOLE_LOG))?;
     let (out, writer) = ConsoleOut::spawn(vec![Box::new(log)]);
     let mut b = VmBuilder::new(VmConfig {
         cpus: info.cpus,
@@ -216,13 +234,19 @@ fn boot_and_wait(
         cmdline: info.cmdline.clone(),
         dax_windows: fs_shares.iter().filter(|s| s.mount.dax).count() as u32,
     })?;
-    let devices = add_devices(&mut b, inst, &resolved, &events, &out)?;
+    let devices = add_devices(&mut b, inst, &resolved, &events, &out, resume.as_ref())?;
     if devices.net.is_none() {
         shape.network = None;
     }
     // After the NIC, so its slot does not depend on the mounts.
     shares::attach(&mut b, fs_shares)?;
-    let vm = start_vm(b)?;
+    let vm = start_vm(b, inst, resume.is_some())?;
+    if resume.is_some() {
+        events.push(EventKind::Resumed {
+            boot_id: boot_id.clone(),
+            restore_ms: spawned.elapsed().as_millis() as u64,
+        });
+    }
     release_freed_heap();
 
     let (main_tx, main_rx) = mpsc::channel();
@@ -253,7 +277,11 @@ fn boot_and_wait(
     ready::spawn(Arc::clone(&shared));
     memory::spawn_responder(Arc::clone(&shared));
     forward::spawn(Arc::clone(&shared), resolved.port_forwards.clone())?;
-    watch::spawn(Arc::clone(&shared), watched)?;
+    // Host changes made while suspended, with a second to spare.
+    let away_since = resume
+        .as_ref()
+        .map(|s| UNIX_EPOCH + Duration::from_millis(s.stopped_at_ms.saturating_sub(1000)));
+    watch::spawn(Arc::clone(&shared), watched, away_since)?;
     signals::spawn(signals, Arc::clone(&shared))?;
 
     let ended = serve(vm, &shared, main_tx, &main_rx)?;
@@ -270,20 +298,23 @@ struct Devices {
     net: Option<Arc<vmuc_virtio::devices::net::NetCounters>>,
 }
 
-/// Every device but the shares.
+/// Every device but the shares. A resumed machine has a NIC exactly
+/// when the suspended one had.
 fn add_devices(
     b: &mut VmBuilder,
     inst: &Instance,
     resolved: &vmuc_config::ResolvedConfig,
     events: &EventLog,
     out: &ConsoleOut,
+    resume: Option<&crate::suspend::Suspended>,
 ) -> anyhow::Result<Devices> {
+    let name = &inst.name;
     b.add_platform_devices(out.clone())?;
     let disk = OpenOptions::new()
         .read(true)
         .write(true)
         .open(inst.disk())?;
-    let serial = format!("vmuc-{}", inst.name);
+    let serial = format!("vmuc-{name}");
     b.add_virtio(Box::new(Block::new(
         disk,
         &BlockConfig {
@@ -306,7 +337,21 @@ fn add_devices(
     b.add_virtio(Box::new(Rng::new()?))?;
     let (balloon, reclaim) = b.add_balloon()?;
     // Last, so disks keep their names: the NIC, when the helper starts.
-    let net = network::attach(b, resolved, events);
+    let net = match resume.map(|s| s.machine.network.is_some()) {
+        None => network::attach(b, resolved, events),
+        Some(true) => Some(network::attach(b, resolved, events).ok_or_else(|| {
+            anyhow!(
+                "cannot resume {name}: networking is unavailable (see the warning above) \
+                 and {name} was suspended with it"
+            )
+        })?),
+        Some(false) => {
+            events.push(EventKind::Warning {
+                message: "no networking until the next boot: it was off when suspended".into(),
+            });
+            None
+        }
+    };
     Ok(Devices {
         vsock: connector,
         balloon,
@@ -315,8 +360,22 @@ fn add_devices(
     })
 }
 
-/// Boots the guest.
-fn start_vm(b: VmBuilder) -> anyhow::Result<Vm> {
+/// Boots the guest, or resumes the suspended one with its RAM mapped from
+/// the image; the suspended state goes before the guest runs, since the
+/// disk moves on from then.
+fn start_vm(b: VmBuilder, inst: &Instance, resume: bool) -> anyhow::Result<Vm> {
+    let name = &inst.name;
+    if resume {
+        let consume = || crate::suspend::remove(&inst.dir);
+        return b
+            .restore_with(&crate::suspend::dir(&inst.dir), RamRestore::Map, consume)
+            .map_err(|e| {
+                anyhow!(
+                    "cannot resume {name}: {e}; `vmuc stop --force {name}` discards the \
+                     suspended state and the next start boots"
+                )
+            });
+    }
     let kernel_path = assets::kernel()?;
     // Mapped, not read: a heap copy would stay billed for the VM's life.
     let kernel =

@@ -326,6 +326,12 @@ pub enum EventKind {
     Booting {
         boot_id: String,
     },
+    /// Resumed from a suspended state instead of booting.
+    Resumed {
+        boot_id: String,
+        /// From the VMM's start to the guest running again.
+        restore_ms: u64,
+    },
     Running {
         addrs: Vec<IpAddr>,
     },

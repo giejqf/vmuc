@@ -59,6 +59,20 @@ pub fn shape(resolved: &ResolvedConfig, shares: &[Share]) -> Shape {
     }
 }
 
+/// Refuses to resume into a machine unlike the suspended one.
+pub fn check(name: &str, then: &Shape, now: &Shape) -> anyhow::Result<()> {
+    let changed = then.differences(now);
+    if changed.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "cannot resume {name}: its machine changed since it was suspended ({}); revert that \
+         with `vmuc edit {name}`, or `vmuc stop --force {name}` discards the suspended state \
+         and the next start boots",
+        changed.join(", ")
+    )
+}
+
 /// The control server's side: hands the request to the main thread and
 /// waits for the outcome.
 pub fn request(shared: &Shared) -> Result<Stats, String> {

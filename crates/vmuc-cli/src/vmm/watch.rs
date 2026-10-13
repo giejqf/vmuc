@@ -7,7 +7,9 @@
 //! with its churn and privacy-protected folders). One thread classifies
 //! each batch per share and hands the changes to the guest agent; another
 //! rescans when FSEvents drops changes, since a rescan reads the host
-//! filesystem and can block. Neither holds guest memory.
+//! filesystem and can block. Neither holds guest memory. After a resume
+//! the shares are rescanned once the guest runs, for the changes made
+//! while it was suspended (ADR 0007).
 
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -15,7 +17,7 @@ use std::time::{Duration, SystemTime};
 
 use vmuc_fs::passthrough::Seen;
 use vmuc_fs::watch::{self, ChangeKind, HostEvent, Watcher};
-use vmuc_proto::{AgentRequest, AgentResponse, EventKind, FsEvent, FsEventKind};
+use vmuc_proto::{AgentRequest, AgentResponse, EventKind, FsEvent, FsEventKind, Phase};
 
 use super::{Shared, ready};
 
@@ -32,12 +34,22 @@ pub struct Watched {
     pub seen: Seen,
 }
 
-pub fn spawn(shared: Arc<Shared>, watched: Vec<Watched>) -> std::io::Result<()> {
+/// `away_since`: when a resumed guest was suspended.
+pub fn spawn(
+    shared: Arc<Shared>,
+    watched: Vec<Watched>,
+    away_since: Option<SystemTime>,
+) -> std::io::Result<()> {
     if watched.is_empty() {
         return Ok(());
     }
     let watched: Arc<[Watched]> = watched.into();
     let (rescan_tx, rescan_rx) = mpsc::channel();
+    if let Some(since) = away_since {
+        for share in watched.iter() {
+            let _ = rescan_tx.send((share.root.clone(), since));
+        }
+    }
     let (sh, w) = (Arc::clone(&shared), Arc::clone(&watched));
     std::thread::Builder::new()
         .name("vmuc-fs-rescan".into())
@@ -92,6 +104,13 @@ fn run(shared: &Shared, watched: &[Watched], rescan: &mpsc::Sender<(PathBuf, Sys
 /// Rescans after drops, one at a time; drops reported meanwhile are done
 /// together.
 fn rescans(shared: &Shared, watched: &[Watched], rx: &mpsc::Receiver<(PathBuf, SystemTime)>) {
+    // Nothing is replayed before the guest's agent answers.
+    while !matches!(shared.phase(), Phase::Running | Phase::Degraded) {
+        if shared.machine.stopping() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     while let Ok(first) = rx.recv() {
         let dirs: Vec<(PathBuf, SystemTime)> =
             std::iter::once(first).chain(rx.try_iter()).collect();

@@ -63,8 +63,13 @@ pub fn write_ssh_config(
 
 pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<()> {
     let (inst, mut child, started) = spawn_vmm(home, name, false)?;
+    let verb = if crate::suspend::exists(&inst.dir) {
+        "resuming"
+    } else {
+        "starting"
+    };
     eprintln!(
-        "starting {name} (log: {})",
+        "{verb} {name} (log: {})",
         inst.dir.join(files::VMM_LOG).display()
     );
     wait_ready(&inst, &mut child, started, timeout)
@@ -147,6 +152,9 @@ fn wait_ready(
                     failed: false,
                 } => {
                     eprintln!("  [{step}/{total}] waiting for {description}");
+                }
+                EventKind::Resumed { restore_ms, .. } => {
+                    eprintln!("  resumed from its suspended state in {restore_ms} ms");
                 }
                 EventKind::Running { .. } => {
                     eprintln!(

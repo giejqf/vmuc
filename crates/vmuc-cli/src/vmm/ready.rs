@@ -124,16 +124,8 @@ fn run(shared: &Shared) {
         return fail(shared, 1, "guest agent");
     }
     requirement(shared, 1, "guest agent", true, false);
-    requirement(shared, 2, "ssh", false, false);
-    if !wait_for(shared, deadline, || probe_ssh(&shared.vsock).is_ok()) {
-        return fail(shared, 2, "ssh");
-    }
-    requirement(shared, 2, "ssh", true, false);
-    shared.set_phase(Phase::Running);
-    shared.events.push(EventKind::Running { addrs: Vec::new() });
-    watch_addresses(shared);
-
-    // The guest clock starts from the RTC's whole seconds; tighten it.
+    // The guest clock starts from the RTC's whole seconds, and a resumed
+    // one from when it was suspended: set it before anything uses it.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as i64);
@@ -142,6 +134,14 @@ fn run(shared: &Shared) {
         max_drift_ms: 100,
     };
     let _ = agent_call(&shared.vsock, &sync, Duration::from_secs(2));
+    requirement(shared, 2, "ssh", false, false);
+    if !wait_for(shared, deadline, || probe_ssh(&shared.vsock).is_ok()) {
+        return fail(shared, 2, "ssh");
+    }
+    requirement(shared, 2, "ssh", true, false);
+    shared.set_phase(Phase::Running);
+    shared.events.push(EventKind::Running { addrs: Vec::new() });
+    watch_addresses(shared);
 }
 
 /// The guest's own addresses (from the agent), shown by `vmuc list` and
