@@ -10,3 +10,5 @@ VMM's CPU while the guest idles for 60 s. Ubuntu 24.04, 4 vCPUs, 4 GiB.
 
 | Date | Host | Commit | Instance | Create p50 / p95 | Modify p50 / p95 | 2000 creates | Idle VMM CPU |
 |------|------|--------|----------|-----------------:|-----------------:|-------------:|-------------:|
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | fa24e1b | e4 | 17.6 / 21.0 | 17.3 / 19.4 | 0.10 s, CPU 0.55 s | 0.40 % |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | fa24e1b | e4 | 17.9 / 20.4 | 17.3 / 19.6 | 0.09 s, CPU 0.96 s | 0.48 % |

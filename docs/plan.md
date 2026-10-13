@@ -31,7 +31,7 @@ instances, and nothing graphical beyond the terminal.
 | Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). The user-space NAT stack moves to v0.2 as the sudo-free fallback | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames |
 | Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
 | Shell | System `ssh` with `ProxyCommand vmuc _proxy <inst> 22` through a vsock tunnel; `ssh.config` written per instance | No host TCP port, works with any sshd, IDE-friendly |
-| File sharing | Own virtiofs (FUSE-over-virtqueue passthrough); DAX per share, opt-in (`mounts[].dax`) | Only option without Apple devices; DAX takes shared-file reads out of the VM's memory but runs file faults on vCPUs (ADR 0005) |
+| File sharing | Own virtiofs (FUSE-over-virtqueue passthrough); DAX per share, opt-in (`mounts[].dax`); host changes in writable shares replayed to guest watchers by the guest kernel | Only option without Apple devices; DAX takes shared-file reads out of the VM's memory but runs file faults on vCPUs (ADR 0005); virtiofs cannot report host changes, and a replay from inside the guest without the kernel gets only edits through (ADR 0006) |
 | Process model | One binary `vmuc`; `vmuc start` spawns detached `vmuc _vmm <name>`; one VM per process | HV allows one VM per process; the entitled binary must own the VM |
 | Control plane | JSON-lines over a unix socket per instance (`vmm.sock`); events appended to `events.jsonl`; status derived from PID liveness + boot-session marker | Lima's design; debuggable with `nc` and `tail` |
 | Host↔agent | Length-prefixed JSON over vsock, one request type per connection; raw byte streams on dedicated vsock connections for tunnels | Simple; control traffic is tiny, bulk traffic bypasses it |
@@ -225,7 +225,9 @@ its design is unchanged from the feasibility study.
 Agent on vsock port 7700: same framing; one request per connection;
 methods: `hello`, `meminfo`, `psi`, `drop_caches`, `compact`,
 `sockets.watch` (streams events), `tunnel {addr}` (then raw bytes),
-`exec` (for probes), `time.sync`, `inotify` (deferred to E4).
+`exec` (for probes), `time.sync`, `fs_events {tag, events}` (host
+changes in a writable share, replayed for the guest's file watchers;
+ADR 0006).
 
 ### CLI surface (v0.1)
 
@@ -405,7 +407,10 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
   granularity, userspace compatibility survey: done 2026-10-13
   (`docs/experiments/2026-10-13-e3-16k-pages.md`); 11 % faster under a
   build, nothing broke, but 14–31 % more memory at idle, so 4 KiB stays.
-- E4 inotify propagation for writable mounts.
+- E4 inotify propagation for writable mounts: done 2026-10-13
+  (`docs/experiments/2026-10-13-e4-inotify-propagation.md`); host changes
+  reach guest watchers as local ones do, replayed by guest kernel patch
+  0002 from the VMM's FSEvents stream (ADR 0006).
 - E5 Snapshot/restore (needs private file mappings to be excluded from
   reclaim, as mvm found).
 - E6 APFS sparse accounting: the macOS CI runners report full
