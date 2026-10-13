@@ -19,3 +19,6 @@ Target: < 350 MiB.
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 1af90d185cee)` | - | 3 | 374 | 355 | 355 | 185 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | - | 3 | 362 | 354 | 354 | 188 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | - | 3 | 289 | 286 | 283 | 203 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p4 | `(kernel 2e58607f2620)` | - | 3 | 278 | 266 | 265 | 187 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p16 | `(kernel b7046fd6fd58)` | - | 3 | 360 | 347 | 347 | 251 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p16 | `page_reporting.page_reporting_order=3 (kernel b7046fd6fd58)` | - | 3 | 301 | 301 | 301 | 247 |

@@ -33,3 +33,7 @@ moves by a batch from run to run.
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | 1243 | 3274 | 99 | 2.1 | 295 | 250 / 1000 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | 1245 | 3284 | 99 | 1.5 | 293 | 250 / 1000 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | 1237 | 3272 | 99 | 1.0 | 281 | 250 / 1000 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p4 | `(kernel 2e58607f2620)` | 481 | 2510 | 99 | 2.1 | 278 | 100 / 500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p4 | `(kernel 2e58607f2620)` | 477 | 2512 | 100 | 0.5 | 265 | 100 / 500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p16 | `page_reporting.page_reporting_order=3 (kernel b7046fd6fd58)` | 520 | 2571 | 97 | 0.5 | 332 | 50 / 2500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p16 | `page_reporting.page_reporting_order=3 (kernel b7046fd6fd58)` | 530 | 2570 | 97 | 1.0 | 340 | 50 / 2500 |

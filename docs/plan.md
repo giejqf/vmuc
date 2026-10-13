@@ -27,7 +27,7 @@ instances, and nothing graphical beyond the terminal.
 | Interrupts | Apple in-kernel GICv3 always on; no emulated GIC, no fallback | Floors macOS at 15; halves idle CPU and wake latency per ArcBox |
 | Virtio | virtio-mmio transport, split queues, own device models: console, blk, net, vsock, fs, rng, balloon | PCI buys nothing without graphics or passthrough; mmio is what ArcBox, libkrun, Firecracker use |
 | Memory | Ledger-tagged 128 KiB granules lazily populated, mapped once; free page reporting + unmap/fresh granules/remap release on a dedicated thread; host pressure responder that drops guest caches; no host-driven balloon targets | See `feasibility.md` requirement 3; plain anonymous memory is billed twice for pages host and guest share (ADR 0003); balloon targets never beat dropping caches (ADR 0004) |
-| Guest page size | 4 KiB | Distro userspace compatibility; 16 KiB is experiment E3 |
+| Guest page size | 4 KiB | 16 KiB costs 14–31 % more memory at idle for ~11 % more speed; compatibility was fine (E3) |
 | Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). The user-space NAT stack moves to v0.2 as the sudo-free fallback | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames |
 | Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
 | Shell | System `ssh` with `ProxyCommand vmuc _proxy <inst> 22` through a vsock tunnel; `ssh.config` written per instance | No host TCP port, works with any sshd, IDE-friendly |
@@ -402,7 +402,9 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
   done 2026-10-13 (`docs/experiments/2026-10-13-e2-virtiofs-dax.md`); DAX
   lands opt-in per share (ADR 0005).
 - E3 16 KiB guest pages: fewer stage-2 entries, 32 MiB reporting
-  granularity, userspace compatibility survey.
+  granularity, userspace compatibility survey: done 2026-10-13
+  (`docs/experiments/2026-10-13-e3-16k-pages.md`); 11 % faster under a
+  build, nothing broke, but 14–31 % more memory at idle, so 4 KiB stays.
 - E4 inotify propagation for writable mounts.
 - E5 Snapshot/restore (needs private file mappings to be excluded from
   reclaim, as mvm found).

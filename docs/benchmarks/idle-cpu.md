@@ -23,3 +23,7 @@ reclaimed yet.
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance ubuntu (kernel 090cd98c03a0) | 4 | 60s | 30s | 0.30 | 1274 MB |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance ubuntu (kernel 090cd98c03a0) | 4 | 60s | 30s | 0.33 | 1260 MB |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance ubuntu, mmap RAM for comparison (53321b7) | 4 | 60s | 30s | 0.37 | 1541 MB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance p4 (kernel 2e58607f2620) | 4 | 60s | 30s | 0.23 | 564 MB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance p4 (kernel 2e58607f2620) | 4 | 60s | 30s | 0.23 | 605 MB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance p16 (kernel b7046fd6fd58) | 4 | 60s | 30s | 0.17 | 636 MB |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | instance p16 (kernel b7046fd6fd58) | 4 | 60s | 30s | 0.20 | 656 MB |

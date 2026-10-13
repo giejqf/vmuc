@@ -18,3 +18,5 @@ instance also generates host keys and installs the agent.
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | ubuntu | kernel 1af90d185cee | 5 | 2348 | 2584 | 3472 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | kernel 090cd98c03a0 | 5 | 2395 | 2625 | 3022 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | kernel  | 5 | 2472 | 2683 | 3361 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p4 | kernel 2e58607f2620 | 5 | 2339 | 2590 | 2841 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p16 | kernel b7046fd6fd58 | 5 | 2229 | 2472 | 2934 |

@@ -37,3 +37,7 @@ the run; major faults and OOM kills from `/proc/vmstat`. Policy: the commit
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | e1 | balloon off (d6ca13a) | cold | warn | 302 | 521 / 3340 / 3341 | 0 | 0 | 3689 | 1 | 0.0 | 82 | 0 | exit 0 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | e1 | balloon off (435a776) | cold | warn | 302 | 1430 / 3339 / 3341 | 0 | 0 | 3762 | 1 | 0.0 | 46 | 0 | exit 0 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | e1 | balloon on (d6ca13a) | idle | critical | 601 | 308 / 314 / 333 | 3552 | 1 | 254 | 1 | 0.0 | 96 | 0 | exit 0 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p4 | 0452c5e, kernel 2e58607f2620 | build | normal | 174 | 1377 / 1591 / 1655 | — | — | 2921 | 387 | 0.0 | 211 | 0 | build exit 0 in 171 s |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p16 | 0452c5e, kernel b7046fd6fd58 | build | normal | 155 | 1480 / 1682 / 1725 | — | — | 2438 | 386 | 0.0 | 105 | 0 | build exit 0 in 153 s |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p4 | 0452c5e, kernel 2e58607f2620 | build | normal | 174 | 1159 / 1365 / 1407 | — | — | 2973 | 386 | 0.0 | 117 | 0 | build exit 0 in 171 s |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | p16 | 0452c5e, kernel b7046fd6fd58 | build | normal | 155 | 1254 / 1450 / 1511 | — | — | 2583 | 386 | 0.0 | 115 | 0 | build exit 0 in 152 s |
