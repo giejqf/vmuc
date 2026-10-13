@@ -10,3 +10,4 @@ pub mod host;
 pub mod inodes;
 pub mod passthrough;
 pub mod server;
+pub mod watch;

@@ -107,6 +107,11 @@ impl Passthrough {
         self.read_only
     }
 
+    /// The shared directory (canonical).
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn inodes(&self) -> MutexGuard<'_, Inodes> {
         self.inodes.lock().unwrap_or_else(PoisonError::into_inner)
     }
