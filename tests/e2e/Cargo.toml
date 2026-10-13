@@ -13,6 +13,7 @@ vmuc-vmm = { path = "../../crates/vmuc-vmm" }
 vmuc-virtio = { path = "../../crates/vmuc-virtio" }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = { workspace = true }
 
 [lints]
