@@ -17,6 +17,12 @@ vCPUs unless noted.
 | vsock RPC p50 | < 0.3 ms | 0.138 ms (p99 0.239 ms), new connection per call | — | met | [vsock-rpc](vsock-rpc.md) |
 | virtiofs | ≥ VZ virtiofs on the same host | 3.0–3.2 GB/s write, 3.8 GB/s cold read, open+close 74–78 µs; with DAX (opt-in, `mounts[].dax`): 3.6 GB/s write, 5.8 GB/s read, and reading costs the VM no memory | 2.7 GB/s write, 4.5 GB/s cold read, open+close 72 µs | mixed: ahead on writes and cold stat (8×), behind on cold reads (ahead with DAX), create, unlink | [fs](fs.md), [fs-memory](fs-memory.md) |
 
+Beyond the targets: an instance suspended with `vmuc suspend` is back
+at an ssh prompt 0.13–0.17 s after `vmuc start` (0.37–0.40 s with its
+RAM image out of the page cache), against 2.2–3.2 s to boot, and costs
+about 50 MiB right after; a suspended one costs none
+([suspend](suspend.md), ADR 0007).
+
 The Lima column comes from `tests/bench/lima-vz/run.sh`, which runs the
 same measurements against a throwaway Lima instance (Ubuntu 24.04,
 4 CPUs, 4 GiB, virtiofs, VZ NAT, containerd off) and appends its rows to

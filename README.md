@@ -27,6 +27,7 @@ vmuc start ubuntu         # boot; returns when ssh works
 vmuc shell ubuntu         # or: vmuc shell ubuntu -- uname -a
 vmuc stat ubuntu          # host footprint, guest memory, bytes handed back
 vmuc tui                  # every instance, live, with start/stop/shell keys
+vmuc suspend ubuntu       # save it as it is; `start` resumes it in ~0.2 s
 vmuc stop ubuntu
 ```
 

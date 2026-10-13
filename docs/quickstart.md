@@ -37,6 +37,7 @@ vmuc create ubuntu        # downloads and verifies the cloud image once
 vmuc start ubuntu         # boots; returns when ssh works (~3 s)
 vmuc shell ubuntu         # or: vmuc shell ubuntu -- uname -a
 vmuc list
+vmuc suspend ubuntu       # saves it; the next start resumes it (~0.2 s)
 vmuc stop ubuntu          # --force if the guest does not power off
 vmuc delete ubuntu        # --force stops it first
 ```
@@ -46,6 +47,16 @@ vmuc delete ubuntu        # --force stops it first
 `vmuc template list` shows the templates (`ubuntu`, `alpine`, `docker`,
 …). `vmuc start --foreground` keeps the VM attached to the terminal
 with its log; Ctrl-C powers it off.
+
+`vmuc suspend` keeps the guest's programs as they are and frees all of
+its host memory and CPU: the state goes to `~/.vmuc/NAME/suspend/`
+(about the memory the guest had in use), and `vmuc start` resumes from
+it once, with the guest's files synced, its clock set and its network
+and shares as before. `vmuc stop --force` on a suspended instance
+discards the state instead, so the next start boots. Changing the CPUs,
+memory, network or shares of a suspended instance keeps it from
+resuming until the change is undone; shares with `dax` cannot be
+suspended yet.
 
 `vmuc shell` starts in the guest path of your current directory when it
 is under a share (your home is, by default), else in the guest home;

@@ -53,8 +53,11 @@ helper process, none of which survive the VMM process.
   - virtio-fs saves its node table and open handles and reopens files
     by path; a handle whose file is gone stays gone (EBADF in the
     guest);
-  - the FSEvents watcher starts from the event ID recorded at suspend,
-    so host changes made meanwhile reach guest watchers;
+  - the writable shares are rescanned against what the guest knows,
+    for changes since the suspend, once the guest runs, so host changes
+    made meanwhile reach guest watchers (the rescan that recovers what
+    FSEvents drops, ADR 0006; FSEvents' own history does not survive
+    every host reboot);
   - the NIC comes back on a new helper with the same MAC address;
     guest TCP connections survive if their peers kept them;
   - the guest's wall clock is stepped by the agent (`time.sync`) as
@@ -67,7 +70,10 @@ helper process, none of which survive the VMM process.
 ## Consequences
 
 - A suspended instance costs disk only: its RAM image holds the pages
-  the guest had in use, nothing else.
+  the guest had in use, nothing else. It is back at an ssh prompt
+  0.13–0.17 s after `vmuc start` (0.4 s from an image out of the page
+  cache), against 2.2–3.2 s to boot, and costs about 50 MiB right after
+  ([suspend](../benchmarks/suspend.md)).
 - The state is tied to this macOS (the GIC state is opaque and
   versioned by the framework) and to this vmuc's snapshot format. A
   resume that fails before the guest runs leaves the state in place and

@@ -119,3 +119,10 @@ instance and a start that resumes from it.
    feasible, and would make a suspended instance cost nothing and resume
    in well under its 2.6 s boot. It is out of scope for v0.1 in plan.md;
    building it is its own decision, with the device work listed above.
+
+**Follow-up.** ADR 0007 builds instance suspend on this. Doing so found
+two ordering faults in the prototype (a snapshot saved the GIC before
+the devices had stopped; a restore put the GIC back after the devices,
+lowering a line one had raised), both fixed
+([log](../logs/2026-10-13-suspend-instances.md)); the numbers above
+predate the fixes.
