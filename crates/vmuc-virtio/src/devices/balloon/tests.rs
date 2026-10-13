@@ -2,7 +2,7 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::device::{INT_CONFIG, IrqStatus};
+use crate::device::IrqStatus;
 use crate::irq::TestIrq;
 use crate::queue::testing::Driver;
 
@@ -27,7 +27,6 @@ struct Rig {
     qs: Vec<Driver>,
     balloon: Balloon,
     rec: Arc<Recorder>,
-    irq: Arc<IrqStatus>,
 }
 
 fn rig(fail: bool) -> Rig {
@@ -42,16 +41,11 @@ fn rig(fail: bool) -> Rig {
         .activate(Activation {
             mem: qs[0].mem.clone(),
             queues: qs.iter().map(|d| d.queue.clone()).collect(),
-            irq: irq.clone(),
+            irq,
             features: features::RING_EVENT_IDX | F_STATS_VQ | F_REPORTING,
         })
         .unwrap();
-    Rig {
-        qs,
-        balloon,
-        rec,
-        irq,
-    }
+    Rig { qs, balloon, rec }
 }
 
 fn wait_until(what: &str, f: impl Fn() -> bool) {
@@ -160,15 +154,14 @@ fn stats_arrive_and_the_buffer_goes_back_on_request() {
 }
 
 #[test]
-fn a_new_target_shows_in_config_and_raises_a_config_interrupt() {
+fn never_asks_the_guest_to_inflate() {
     let r = rig(false);
-    let h = r.balloon.handle();
-    h.set_target(64 << 20);
-    wait_until("config interrupt", || r.irq.status() & INT_CONFIG != 0);
-    let mut b = [0u8; 4];
+    let mut b = [0xffu8; 4];
     r.balloon.read_config(0, &mut b);
-    assert_eq!(u32::from_le_bytes(b), (64 << 20) / 4096);
+    assert_eq!(u32::from_le_bytes(b), 0, "num_pages");
     let mut balloon = r.balloon;
-    balloon.write_config(4, &16384u32.to_le_bytes());
-    assert_eq!(h.actual(), 64 << 20);
+    balloon.write_config(4, &16u32.to_le_bytes());
+    balloon.read_config(4, &mut b);
+    assert_eq!(u32::from_le_bytes(b), 16, "actual reads back");
+    assert_eq!(balloon.features() & (1 << 2), 0, "no DEFLATE_ON_OOM");
 }

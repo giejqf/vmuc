@@ -9,8 +9,9 @@
 //! Inflation hands over single 4 KiB frames, so only contiguous runs of
 //! them can be released. The stats queue carries the guest's memory
 //! counters; the device keeps the guest's buffer and returns it to ask
-//! for fresh numbers. The balloon target (`num_pages`) is 0 unless the
-//! host sets one.
+//! for fresh numbers. `num_pages` is always 0: vmuc never asks the guest
+//! to inflate (ADR 0004), so the inflate queue only matters to a driver
+//! that inflates on its own.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
@@ -25,7 +26,6 @@ use crate::mem::GuestMemory;
 use crate::queue::Queue;
 
 pub const F_STATS_VQ: u64 = 1 << 1;
-pub const F_DEFLATE_ON_OOM: u64 = 1 << 2;
 pub const F_REPORTING: u64 = 1 << 5;
 
 const INFLATE: usize = 0;
@@ -70,8 +70,6 @@ impl GuestStats {
 
 #[derive(Debug, Default)]
 struct State {
-    /// Requested balloon size in 4 KiB pages (`num_pages`).
-    target: u32,
     /// What the guest says the balloon holds (`actual`).
     actual: u32,
     stats: Option<(Instant, GuestStats)>,
@@ -97,17 +95,6 @@ impl BalloonHandle {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Asks the guest to inflate the balloon to `bytes` (0 deflates it).
-    pub fn set_target(&self, bytes: u64) {
-        self.lock().target = (bytes / PAGE).min(u64::from(u32::MAX)) as u32;
-        self.doorbell.ring_bits(HOST_EVENT);
-    }
-
-    /// Bytes the guest reports the balloon holding.
-    pub fn actual(&self) -> u64 {
-        u64::from(self.lock().actual) * PAGE
-    }
-
     /// The latest guest counters and when they arrived; asks for fresh ones.
     pub fn stats(&self) -> Option<(Instant, GuestStats)> {
         let s = self.lock().stats;
@@ -121,8 +108,6 @@ struct Handler {
     reclaim: Arc<dyn Reclaim>,
     /// The guest's stats buffer, held until we want new numbers.
     stats_head: Option<u16>,
-    /// `num_pages` last announced to the guest.
-    announced: u32,
 }
 
 /// Queue indices after the inflate/deflate pair: Linux numbers only the
@@ -279,15 +264,6 @@ impl QueueHandler for Handler {
                 Self::finish(ctx, s, true);
             }
         }
-        let target = self
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .target;
-        if bits & HOST_EVENT != 0 && target != self.announced {
-            self.announced = target;
-            ctx.irq.signal_config();
-        }
     }
 
     fn reset(&mut self) {
@@ -310,7 +286,6 @@ impl Balloon {
             state: Arc::clone(&state),
             reclaim,
             stats_head: None,
-            announced: 0,
         };
         let worker = Worker::spawn("virtio-balloon", handler)?;
         let handle = BalloonHandle {
@@ -330,7 +305,7 @@ impl VirtioDevice for Balloon {
         device_type::BALLOON
     }
     fn features(&self) -> u64 {
-        features::RING_EVENT_IDX | F_STATS_VQ | F_DEFLATE_ON_OOM | F_REPORTING
+        features::RING_EVENT_IDX | F_STATS_VQ | F_REPORTING
     }
     fn queue_max_sizes(&self) -> Vec<u16> {
         // inflate, deflate, stats, reporting
@@ -338,11 +313,8 @@ impl VirtioDevice for Balloon {
     }
     fn read_config(&self, offset: u64, data: &mut [u8]) {
         let s = self.handle.lock();
-        let v = match offset {
-            0 => s.target,
-            4 => s.actual,
-            _ => 0,
-        };
+        // num_pages (offset 0) is always 0.
+        let v = if offset == 4 { s.actual } else { 0 };
         put_le(data, u64::from(v));
     }
     fn write_config(&mut self, offset: u64, data: &[u8]) {
