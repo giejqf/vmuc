@@ -23,7 +23,7 @@ const ICR: u64 = 0x01c;
 
 const PERIPH_ID: [u8; 4] = [0x31, 0x10, 0x04, 0x00];
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Regs {
     /// Seconds added to host time (set by writes to `LR`).
     offset: i64,
@@ -61,6 +61,21 @@ impl Pl031 {
 
     fn now(&self, r: &Regs) -> u32 {
         ((self.clock)() + r.offset) as u32
+    }
+}
+
+impl super::Stateful for Pl031 {
+    fn save(&self) -> serde_json::Value {
+        let r = self.regs.lock().unwrap_or_else(PoisonError::into_inner);
+        serde_json::to_value(&*r).unwrap_or_default()
+    }
+
+    /// The offset is against host time, so a restored clock reads the
+    /// time of the restore, not of the snapshot.
+    fn restore(&self, state: serde_json::Value) -> Result<(), String> {
+        *self.regs.lock().unwrap_or_else(PoisonError::into_inner) =
+            serde_json::from_value(state).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 

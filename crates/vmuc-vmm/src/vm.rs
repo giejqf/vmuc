@@ -13,8 +13,10 @@
 //! The teardown order is a contract (AGENTS.md); `Drop` enforces it even
 //! when boot fails halfway.
 
+use std::path::Path;
 use std::sync::{Arc, OnceLock, PoisonError, RwLock, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 use vmuc_hv::{Gic, GicConfig, HvError, HvVm, ReservedIntid};
@@ -22,6 +24,7 @@ use vmuc_virtio::devices::balloon::{Balloon, BalloonHandle, Reclaim};
 use vmuc_virtio::{BusDevice, GuestMemory, Interrupt, IrqStatus, MmioTransport, VirtioDevice};
 
 use crate::bus::{MmioBus, Overlap};
+use crate::devices::Stateful;
 use crate::devices::console::ConsoleOut;
 use crate::devices::pl011::Pl011;
 use crate::devices::pl031::Pl031;
@@ -35,6 +38,7 @@ use crate::loader::{BootLayout, ImageHeader, LoadError};
 use crate::machine::{Machine, VmExit};
 use crate::memory::reclaim::HvStage2;
 use crate::memory::{GuestRam, ReclaimError, ReclaimStats, Reclaimer};
+use crate::snapshot::{self, Cpu, RamRestore};
 use crate::vcpu::run_vcpu;
 use crate::window::FileWindow;
 
@@ -52,6 +56,8 @@ pub enum VmError {
     Bus(#[from] Overlap),
     #[error("{0}")]
     Config(String),
+    #[error("snapshot: {0}")]
+    Snapshot(String),
 }
 
 /// What to boot.
@@ -116,6 +122,8 @@ pub struct VmBuilder {
     hv: HvVm,
     /// DAX windows handed out so far.
     dax_windows: u32,
+    /// Platform devices a snapshot carries, by name.
+    stateful: Vec<(&'static str, Arc<dyn Stateful>)>,
 }
 
 impl VmBuilder {
@@ -158,6 +166,7 @@ impl VmBuilder {
             ram,
             hv,
             dax_windows: 0,
+            stateful: Vec::new(),
         })
     }
 
@@ -188,9 +197,11 @@ impl VmBuilder {
     /// UART so the caller can feed it keyboard input.
     pub fn add_platform_devices(&mut self, out: ConsoleOut) -> Result<Arc<Pl011>, VmError> {
         let uart = Arc::new(Pl011::new(Arc::new(SpiLine(spi_intid(PL011_SPI))), out));
+        let rtc = Arc::new(Pl031::default());
         self.bus.insert(PL011_BASE, PRIMECELL_SIZE, uart.clone())?;
-        self.bus
-            .insert(PL031_BASE, PRIMECELL_SIZE, Arc::new(Pl031::default()))?;
+        self.bus.insert(PL031_BASE, PRIMECELL_SIZE, rtc.clone())?;
+        self.stateful.push(("pl011", uart.clone()));
+        self.stateful.push(("pl031", rtc));
         Ok(uart)
     }
 
@@ -291,6 +302,74 @@ impl VmBuilder {
         mem.write(layout.fdt, &blob).map_err(LoadError::from)?;
         debug!(?layout, fdt_bytes = blob.len(), "guest loaded");
 
+        let vm = self.launch()?;
+        info!(cpus = vm.config.cpus, "booting");
+        vm.machine.power_on(0, layout.entry, layout.fdt);
+        Ok(vm)
+    }
+
+    /// Builds the VM from a snapshot in `dir` instead of booting: guest
+    /// RAM, then the devices (whose queues pick up from RAM), then the
+    /// vCPUs, created, given the GIC state and resumed. The machine must
+    /// have been built as the snapshotted one was (same CPUs, RAM and
+    /// devices, in the same order).
+    pub fn restore(self, dir: &Path, ram: RamRestore) -> Result<Vm, VmError> {
+        let bad = |e: std::io::Error| VmError::Snapshot(e.to_string());
+        let (state, gic_state) = snapshot::State::read(dir).map_err(bad)?;
+        if state.cpus != self.config.cpus
+            || state.ram_size != self.config.ram_size
+            || state.vcpus.len() != state.cpus as usize
+            || state.transports.len() != self.transports.len()
+        {
+            return Err(VmError::Snapshot(format!(
+                "taken of {} vCPUs, {} bytes of RAM and {} virtio devices; this VM has {}, {} and {}",
+                state.cpus,
+                state.ram_size,
+                state.transports.len(),
+                self.config.cpus,
+                self.config.ram_size,
+                self.transports.len()
+            )));
+        }
+        let (host, len) = (self.ram.host_ptr(), self.ram.size() as usize);
+        let image = dir.join(snapshot::RAM_FILE);
+        match ram {
+            // SAFETY: guest RAM's own mapping; no vCPU or device runs yet.
+            RamRestore::Copy => unsafe { snapshot::copy_ram(&image, host, len) }
+                .map(drop)
+                .map_err(bad)?,
+            RamRestore::Map => {
+                self.hv.unmap_memory(RAM_BASE, len)?;
+                // SAFETY: as above, and out of the VM until mapped back.
+                unsafe { snapshot::map_ram(&image, host, len) }.map_err(bad)?;
+                self.ram.map_into(&self.hv)?;
+            }
+        }
+        for (t, st) in self.transports.iter().zip(&state.transports) {
+            t.restore(st).map_err(VmError::Snapshot)?;
+        }
+        for (name, dev) in &self.stateful {
+            let st = state.devices.get(*name).cloned().unwrap_or_default();
+            dev.restore(st)
+                .map_err(|e| VmError::Snapshot(format!("{name}: {e}")))?;
+        }
+        let vm = self.launch()?;
+        Gic::restore_state(&gic_state)?;
+        let shift = vmuc_hv::state::host_counter().wrapping_sub(state.paused_at);
+        for (index, cpu) in state.vcpus.into_iter().enumerate() {
+            match cpu {
+                Cpu::Running(regs) => vm.machine.resume_cpu(index, regs.into(), shift),
+                Cpu::Starting { entry, context } => vm.machine.power_on(index, entry, context),
+                Cpu::Off => {}
+            }
+        }
+        info!(cpus = vm.config.cpus, "restored");
+        Ok(vm)
+    }
+
+    /// Creates the machine and one parked thread per vCPU, and waits until
+    /// every vCPU exists.
+    fn launch(self) -> Result<Vm, VmError> {
         let ram = RAM_BASE..RAM_BASE + self.config.ram_size;
         let machine = Arc::new(Machine::new(self.config.cpus, self.bus).with_ram(ram));
         let _ = self.machine.set(Arc::clone(&machine));
@@ -299,12 +378,14 @@ impl VmBuilder {
             vcpu_threads: Vec::new(),
             transports: self.transports,
             reclaim_gate: self.reclaim_gate,
+            stateful: self.stateful,
+            config: self.config,
             _gic: self.gic,
             _hv: self.hv,
-            _ram: self.ram,
+            ram: self.ram,
         };
         let (tx, rx) = mpsc::channel();
-        for index in 0..self.config.cpus as usize {
+        for index in 0..vm.config.cpus as usize {
             let m = Arc::clone(&vm.machine);
             let tx = tx.clone();
             let handle = thread::Builder::new()
@@ -314,17 +395,24 @@ impl VmBuilder {
             vm.vcpu_threads.push(handle);
         }
         drop(tx);
-        for _ in 0..self.config.cpus {
+        for _ in 0..vm.config.cpus {
             match rx.recv() {
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_) => return Err(VmError::Config("a vCPU thread died during creation".into())),
             }
         }
-        info!(cpus = self.config.cpus, "booting");
-        vm.machine.power_on(0, layout.entry, layout.fdt);
         Ok(vm)
     }
+}
+
+/// What taking a snapshot cost.
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotStats {
+    /// Until every vCPU had stopped and captured itself.
+    pub pause: Duration,
+    pub ram_bytes: u64,
+    pub total: Duration,
 }
 
 /// A running VM. Dropping it stops the guest and tears everything down
@@ -336,11 +424,13 @@ pub struct Vm {
     /// memory before the VM and RAM go away.
     transports: Vec<Arc<MmioTransport>>,
     reclaim_gate: Arc<RwLock<bool>>,
+    stateful: Vec<(&'static str, Arc<dyn Stateful>)>,
+    config: VmConfig,
     // Dropped in declaration order after `Drop::drop` has joined the
     // vCPUs: GIC, then the VM (hv_vm_destroy), then RAM (munmap).
     _gic: Gic,
     _hv: HvVm,
-    _ram: GuestRam,
+    ram: GuestRam,
 }
 
 impl std::fmt::Debug for Vm {
@@ -355,6 +445,56 @@ impl Vm {
     /// Shared state: ask it to stop, read exit counters.
     pub fn machine(&self) -> &Arc<Machine> {
         &self.machine
+    }
+
+    /// Pauses the guest and writes it to `dir` (see [`snapshot`]). The VM
+    /// stays paused with its devices stopped: drop it afterwards.
+    pub fn snapshot(&self, dir: &Path) -> Result<SnapshotStats, VmError> {
+        let started = Instant::now();
+        let cpus = self
+            .machine
+            .pause()
+            .ok_or_else(|| VmError::Snapshot("the VM stopped while pausing".into()))?;
+        let paused_at = vmuc_hv::state::host_counter();
+        let pause = started.elapsed();
+        let gic = Gic::save_state()?;
+        let transports = self.transports.iter().map(|t| t.save()).collect();
+        // Their workers stop touching guest RAM before it is read.
+        for t in &self.transports {
+            t.shutdown();
+        }
+        let devices = self
+            .stateful
+            .iter()
+            .map(|(name, dev)| ((*name).to_owned(), dev.save()))
+            .collect();
+        let io = |e: std::io::Error| VmError::Snapshot(e.to_string());
+        std::fs::create_dir_all(dir).map_err(io)?;
+        // SAFETY: guest RAM's mapping; vCPUs and devices are stopped.
+        let ram_bytes = unsafe {
+            snapshot::write_ram(
+                self.ram.host_ptr(),
+                self.ram.size() as usize,
+                &dir.join(snapshot::RAM_FILE),
+            )
+        }
+        .map_err(io)?;
+        snapshot::State {
+            version: snapshot::VERSION,
+            cpus: self.config.cpus,
+            ram_size: self.config.ram_size,
+            paused_at,
+            vcpus: cpus.into_iter().map(Cpu::from).collect(),
+            transports,
+            devices,
+        }
+        .write(dir, &gic)
+        .map_err(io)?;
+        Ok(SnapshotStats {
+            pause,
+            ram_bytes,
+            total: started.elapsed(),
+        })
     }
 
     /// Blocks until the guest powers off, resets, crashes or is stopped,

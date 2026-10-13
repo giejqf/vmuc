@@ -53,7 +53,7 @@ const PERIPH_ID: [u8; 4] = [0x11, 0x10, 0x34, 0x00];
 /// FIFO so a paste is not dropped while the guest catches up.
 const RX_LIMIT: usize = 64 * 1024;
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Regs {
     rx: VecDeque<u8>,
     /// Raw status bits other than RX/RT/TX, which are derived.
@@ -125,6 +125,21 @@ impl Pl011 {
             r.level = level;
             self.irq.set_level(level);
         }
+    }
+}
+
+impl super::Stateful for Pl011 {
+    fn save(&self) -> serde_json::Value {
+        serde_json::to_value(&*self.lock()).unwrap_or_default()
+    }
+
+    /// Input still queued is the guest's; the line is driven to match.
+    fn restore(&self, state: serde_json::Value) -> Result<(), String> {
+        let mut r = self.lock();
+        *r = serde_json::from_value(state).map_err(|e| e.to_string())?;
+        r.level = r.mis() != 0;
+        self.irq.set_level(r.level);
+        Ok(())
     }
 }
 
