@@ -87,7 +87,9 @@ Found on the way:
   traffic: an exit for MMIO already on its way can come back instead of
   the cancel, and the vCPU re-enters the guest. vCPUs now check for a
   pause before every entry and the controller re-kicks the ones that
-  have not reported.
+  have not reported. A stop had the same race (a vCPU left idling in the
+  guest, teardown waiting on it), now handled the same way
+  ([log](../logs/2026-10-13-lost-vcpu-cancels.md)).
 - `hv_vcpu_set_simd_fp_reg` takes its vector by value in Q0, which
   stable Rust cannot declare (`simd_ffi`); it is called through a short
   `asm!` sequence.
