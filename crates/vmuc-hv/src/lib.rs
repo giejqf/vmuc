@@ -16,6 +16,7 @@ mod error;
 mod exit;
 pub mod ffi;
 mod gic;
+pub mod guest_memory;
 mod memory;
 mod vcpu;
 mod vm;
@@ -23,7 +24,7 @@ mod vm;
 pub use error::{HvError, HvResult, check};
 pub use exit::{ExceptionClass, MmioInfo, VcpuExit};
 pub use gic::{Gic, GicConfig, ReservedIntid};
-pub use memory::{HOST_PAGE_SIZE, MemoryPermission, align_inward};
+pub use memory::{HOST_PAGE_SIZE, MemoryPermission, align_inward, align_inward_to};
 pub use vcpu::HvVcpu;
 pub use vm::HvVm;
 
