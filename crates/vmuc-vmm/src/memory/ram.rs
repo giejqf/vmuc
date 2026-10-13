@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Guest RAM: one anonymous private mapping, never pre-touched, mapped
-//! into the VM once. The host pays only for pages the guest touches.
+//! Guest RAM: one region of ledger-tagged granules
+//! ([`vmuc_hv::guest_memory`]), never pre-touched, mapped into the VM
+//! once. The host pays once, and only, for pages that are touched.
 
 use std::io;
 use std::sync::Arc;
@@ -22,8 +23,9 @@ unsafe impl Sync for Mapping {}
 
 impl Drop for Mapping {
     fn drop(&mut self) {
-        // SAFETY: `ptr`/`len` came from a successful mmap and nothing maps
-        // them into the VM any more (the VM is destroyed before RAM drops).
+        // SAFETY: `ptr`/`len` came from guest_memory::allocate and nothing
+        // maps them into the VM any more (the VM is destroyed before RAM
+        // drops).
         unsafe { libc::munmap(self.ptr.cast(), self.len) };
     }
 }
@@ -52,26 +54,10 @@ impl GuestRam {
                 format!("guest RAM size {size:#x} is not a multiple of 16 KiB"),
             ));
         }
-        // SAFETY: anonymous private mapping at a kernel-chosen address.
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANON | libc::MAP_PRIVATE,
-                -1,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
+        let ptr = vmuc_hv::guest_memory::allocate(len)?;
         Ok(Self {
             base,
-            mapping: Arc::new(Mapping {
-                ptr: ptr.cast(),
-                len,
-            }),
+            mapping: Arc::new(Mapping { ptr, len }),
         })
     }
 
