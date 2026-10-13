@@ -13,9 +13,13 @@ boot on vmuc's own VMM and virtio devices, `vmuc start` / `vmuc shell`
 work end to end over vsock (about 3 s from start to a shell on an M4
 Pro), memory the guest frees is back in macOS within seconds, your home
 directory is shared read-only over vmuc's own virtiofs, guest ports
-appear on the host's localhost, and `vmuc tui` watches it all. Guest
-networking through vmnet needs a small root helper (`vmuc sudoers`
-prints how to install it) and has not yet been run end to end. Start
+appear on the host's localhost, a suspended instance is back in a
+fraction of a second with its programs as they were, and `vmuc tui`
+watches it all. Guests get a NAT network from macOS's vmnet (IPv4 and
+IPv6, reachable from the host at their own address) through a small
+root helper that relays their frames; `vmuc sudoers` prints how to
+install it, and without it ssh, shares and port forwards still work
+over vsock. Start
 with `docs/quickstart.md`; `docs/benchmarks/README.md` has the numbers
 against the targets, `docs/plan.md` the roadmap and
 `docs/feasibility.md` why this works.

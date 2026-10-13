@@ -121,6 +121,14 @@ small root helper and its sudoers rule; `vmuc sudoers` prints the
 commands. Without them instances boot without a NIC and `vmuc start`
 says so.
 
+With the helper, each instance is on macOS's shared (NAT) network: it
+takes an address from macOS's DHCP (`vmuc list` shows it), the Mac
+reaches it at that address and it reaches the Mac at its gateway, DNS
+goes through the Mac's resolver, and macOS translates its IPv4 and
+IPv6 traffic to the outside. `network.mode: bridged` (with
+`network.interface: en0`) puts it on the LAN instead. Port forwards to
+`127.0.0.1` need no network at all: they ride vsock, TCP only.
+
 ## Configuration
 
 `docs/config.md` lists every key with its default (generated from the
