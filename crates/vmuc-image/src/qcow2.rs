@@ -18,7 +18,7 @@ use std::path::Path;
 
 use flate2::read::DeflateDecoder;
 
-use crate::sparse::{ZERO_RUN, create_sparse};
+use crate::sparse::{SparseFileExt, ZERO_RUN, add_hole, create_sparse};
 use crate::{Error, Result};
 
 const MAGIC: [u8; 4] = *b"QFI\xfb";
@@ -458,6 +458,7 @@ pub fn convert_to_raw(src: &Path, dst: &Path, mut progress: impl FnMut(u64, u64)
     let cluster_size = image.cluster_size();
     let out = create_sparse(dst, total)?;
     let mut buf = vec![0u8; cluster_size as usize];
+    let mut holes = Vec::new();
     progress(0, total);
     for index in 0..image.cluster_count() {
         let offset = index * cluster_size;
@@ -469,14 +470,19 @@ pub fn convert_to_raw(src: &Path, dst: &Path, mut progress: impl FnMut(u64, u64)
         ) {
             image.read_cluster(index, &mut buf)?;
             for (i, run) in buf[..len].chunks(ZERO_RUN).enumerate() {
+                let at = offset + (i * ZERO_RUN) as u64;
                 if run.iter().any(|&b| b != 0) {
-                    out.write_all_at(run, offset + (i * ZERO_RUN) as u64)?;
+                    out.write_all_at(run, at)?;
+                } else {
+                    add_hole(&mut holes, at..at + run.len() as u64);
                 }
             }
+        } else {
+            add_hole(&mut holes, offset..offset + len as u64);
         }
         progress(offset + len as u64, total);
     }
-    out.sync_all()?;
+    out.settle_holes(&holes)?;
     Ok(())
 }
 
@@ -596,9 +602,7 @@ mod tests {
         );
         // Written data is about 64k+1k+2k+700k+4k; the holes must stay holes.
         let alloc = allocated_bytes(&out).unwrap();
-        if cfg!(target_os = "linux") {
-            assert!(alloc < 2 << 20, "{}: allocated {alloc}", qcow.display());
-        }
+        assert!(alloc < 2 << 20, "{}: allocated {alloc}", qcow.display());
 
         let mut img = Qcow2::open(qcow).unwrap();
         assert_eq!(img.virtual_size(), 16 << 20);

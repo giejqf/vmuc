@@ -21,7 +21,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::digest::{Digest, DigestWriter};
-use crate::sparse::SparseWriter;
+use crate::sparse::{SparseFileExt, SparseWriter};
 use crate::{Error, Result};
 
 const ENTRY_SUBDIR: &str = "by-url-sha256";
@@ -412,9 +412,9 @@ pub fn decompress_if_needed(path: &Path) -> Result<PathBuf> {
                 .map_err(|e| decompress_error(path, &partial, &e))?;
         }
     }
-    let (file, len) = writer.finish()?;
-    file.set_len(len)?;
-    file.sync_all()?;
+    let done = writer.finish()?;
+    done.inner.set_len(done.len)?;
+    done.inner.settle_holes(&done.holes)?;
     fs::rename(&partial, &raw)?;
     Ok(raw)
 }
@@ -681,12 +681,10 @@ mod tests {
             let out = decompress_if_needed(&comp).unwrap();
             assert_eq!(out, dir.join("data.raw"));
             assert_eq!(fs::read(&out).unwrap(), raw, "{tool}");
-            if cfg!(target_os = "linux") {
-                assert!(
-                    crate::sparse::allocated_bytes(&out).unwrap() < 1 << 20,
-                    "{tool}"
-                );
-            }
+            assert!(
+                crate::sparse::allocated_bytes(&out).unwrap() < 1 << 20,
+                "{tool}"
+            );
             assert!(!dir.join("data.raw.partial").exists());
             // Cached: a second call does not rewrite the file.
             let mtime = fs::metadata(&out).unwrap().modified().unwrap();

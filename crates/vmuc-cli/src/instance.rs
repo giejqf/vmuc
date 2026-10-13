@@ -14,7 +14,7 @@ use vmuc_config::schema::{DigestAlgorithm, Mount};
 use vmuc_config::{
     Builtin, InstanceConfig, Resolution, ResolvedConfig, TemplateStore, VmucHome, fill_defaults,
 };
-use vmuc_image::sparse::SparseWriter;
+use vmuc_image::sparse::{SparseFileExt, SparseWriter};
 use vmuc_image::{Cache, Digest, decompress_if_needed};
 
 /// Overrides from `vmuc create` flags, applied on top of the template.
@@ -280,9 +280,10 @@ fn sparse_copy(src: &Path, dst: &Path) -> io::Result<()> {
         }
         writer.write_all(&buf[..n])?;
     }
-    let (mut out, len) = writer.finish()?;
-    out.set_len(len)?;
-    out.seek(SeekFrom::Start(0))?;
+    let mut done = writer.finish()?;
+    done.inner.set_len(done.len)?;
+    done.inner.settle_holes(&done.holes)?;
+    done.inner.seek(SeekFrom::Start(0))?;
     Ok(())
 }
 
