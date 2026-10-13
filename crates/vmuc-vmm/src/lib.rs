@@ -12,6 +12,7 @@ pub mod loader;
 pub mod machine;
 pub mod memory;
 pub mod psci;
+pub mod snapshot;
 pub mod vcpu;
 pub mod vm;
 pub mod window;
