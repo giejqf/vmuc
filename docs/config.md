@@ -73,9 +73,6 @@ left out falls back to the next layer: built-in default <
 | `user.comment` | "" | GECOS field. |
 | `user.passwordlessSudo` | true | Whether sudo asks for a password. |
 | `timezone` | the host's zone, else "UTC" | IANA zone name applied inside the guest. |
-| `memoryPolicy` |  | How vmuc takes memory back beyond free page reporting, which is always on. |
-| `memoryPolicy.pressureBalloon` | false | Inflate the balloon when macOS reports memory pressure (hysteresis rules in docs/plan.md). |
-| `memoryPolicy.minAvailable` | "256MiB" | The balloon never pushes the guest's available memory below this. |
 | `message` | "" | Printed after `vmuc start`. |
 | `dns` | [] (the DNS server vmnet's DHCP hands out: the host's resolver) | Nameservers written to the guest's resolv.conf instead. |
 | `hostResolver` | true | Reserved for vmuc's own user-space network (v0.2); ignored with vmnet, whose DHCP already points the guest at the host's resolver. |

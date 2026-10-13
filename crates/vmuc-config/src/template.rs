@@ -343,16 +343,6 @@ fn merge(child: InstanceConfig, base: InstanceConfig) -> InstanceConfig {
             passwordless_sudo: child.user.passwordless_sudo.or(base.user.passwordless_sudo),
         },
         timezone: child.timezone.or(base.timezone),
-        memory_policy: crate::schema::MemoryPolicy {
-            pressure_balloon: child
-                .memory_policy
-                .pressure_balloon
-                .or(base.memory_policy.pressure_balloon),
-            min_available: child
-                .memory_policy
-                .min_available
-                .or(base.memory_policy.min_available),
-        },
         message: child.message.or(base.message),
         dns: if child.dns.is_empty() {
             base.dns

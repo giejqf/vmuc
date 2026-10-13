@@ -6,8 +6,7 @@ use serde::de::{self, Deserialize, Deserializer, Visitor};
 
 use super::*;
 use crate::schema::{
-    ImageRef, InstanceConfig, KernelRef, MemoryPolicy, Mount, Network, PortForward, Probe,
-    Provision, Ssh, User,
+    ImageRef, InstanceConfig, KernelRef, Mount, Network, PortForward, Probe, Provision, Ssh, User,
 };
 
 /// A deserializer that only records the field names a struct asks for.
@@ -51,7 +50,7 @@ fn fields_of<'de, T: Deserialize<'de>>() -> Vec<&'static str> {
 
 #[test]
 fn the_table_lists_exactly_the_schemas_keys() {
-    let groups: [(&str, Vec<&str>); 11] = [
+    let groups: [(&str, Vec<&str>); 10] = [
         ("", fields_of::<InstanceConfig>()),
         ("images[].", fields_of::<ImageRef>()),
         ("images[].kernel.", fields_of::<KernelRef>()),
@@ -62,7 +61,6 @@ fn the_table_lists_exactly_the_schemas_keys() {
         ("provision[].", fields_of::<Provision>()),
         ("probes[].", fields_of::<Probe>()),
         ("user.", fields_of::<User>()),
-        ("memoryPolicy.", fields_of::<MemoryPolicy>()),
     ];
     let schema: BTreeSet<String> = groups
         .iter()

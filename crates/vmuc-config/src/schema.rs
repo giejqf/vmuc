@@ -377,17 +377,6 @@ pub struct User {
     pub passwordless_sudo: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MemoryPolicy {
-    /// Answer host memory pressure by inflating the balloon.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pressure_balloon: Option<bool>,
-    /// Never balloon the guest below this much available memory.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_available: Option<ByteSize>,
-}
-
 /// One instance (or template) YAML document.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -459,11 +448,6 @@ pub struct InstanceConfig {
     pub user: User,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(
-        deserialize_with = "de_null_default",
-        skip_serializing_if = "is_default"
-    )]
-    pub memory_policy: MemoryPolicy,
     /// Printed after `vmuc start`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -648,9 +632,6 @@ param:
 user:
   name: alice
   uid: 501
-memoryPolicy:
-  pressureBalloon: true
-  minAvailable: 512MiB
 dns: [1.1.1.1, "2606:4700:4700::1111"]
 "#;
         let c = InstanceConfig::from_yaml(y, "test").unwrap();
@@ -663,7 +644,6 @@ dns: [1.1.1.1, "2606:4700:4700::1111"]
         assert_eq!(c.provision[1].mode, ProvisionMode::Data);
         assert_eq!(c.probes[0].mode, ProbeMode::Readiness);
         assert_eq!(c.user.uid, Some(501));
-        assert_eq!(c.memory_policy.min_available, Some(ByteSize::from_mib(512)));
         assert_eq!(c.dns.len(), 2);
         // Round trip through the compact serializer.
         let again = InstanceConfig::from_yaml(&c.to_yaml().unwrap(), "again").unwrap();

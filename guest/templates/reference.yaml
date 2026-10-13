@@ -175,17 +175,6 @@ user:
 # Built-in default: the host's zone, else "UTC"
 timezone: null
 
-# How vmuc takes memory back beyond free page reporting, which is always
-# on.
-memoryPolicy:
-  # Inflate the balloon when macOS reports memory pressure (hysteresis
-  # rules in docs/plan.md).
-  # Built-in default: false
-  pressureBalloon: null
-  # The balloon never pushes the guest's available memory below this.
-  # Built-in default: "256MiB"
-  minAvailable: null
-
 # Printed after `vmuc start`.
 # Built-in default: ""
 message: null

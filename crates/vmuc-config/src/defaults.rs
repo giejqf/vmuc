@@ -34,7 +34,6 @@ pub const DEFAULT_USER: &str = "vmuc";
 pub const DEFAULT_UID: u32 = 1000;
 pub const DEFAULT_SHELL: &str = "/bin/bash";
 pub const DEFAULT_TIMEZONE: &str = "UTC";
-pub const DEFAULT_MIN_AVAILABLE: ByteSize = ByteSize::from_mib(256);
 pub const DEFAULT_DATA_OWNER: &str = "root:root";
 pub const DEFAULT_DATA_PERMISSIONS: &str = "0644";
 
@@ -307,12 +306,6 @@ pub struct ResolvedUser {
     pub passwordless_sudo: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ResolvedMemoryPolicy {
-    pub pressure_balloon: bool,
-    pub min_available: ByteSize,
-}
-
 /// A concrete image choice; `digest` and `kernel` stay optional because
 /// "unpinned" and "no kernel override" are meaningful final states.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -343,7 +336,6 @@ pub struct ResolvedConfig {
     pub param: IndexMap<String, String>,
     pub user: ResolvedUser,
     pub timezone: String,
-    pub memory_policy: ResolvedMemoryPolicy,
     pub message: String,
     pub dns: Vec<IpAddr>,
     pub host_resolver: bool,
@@ -485,14 +477,6 @@ pub fn fill_defaults(
         timezone: l
             .pick(|c| c.timezone.as_ref())
             .unwrap_or_else(|| builtin.timezone()),
-        memory_policy: ResolvedMemoryPolicy {
-            pressure_balloon: l
-                .pick(|c| c.memory_policy.pressure_balloon.as_ref())
-                .unwrap_or(false),
-            min_available: l
-                .pick(|c| c.memory_policy.min_available.as_ref())
-                .unwrap_or(DEFAULT_MIN_AVAILABLE),
-        },
         message: l.pick(|c| c.message.as_ref()).unwrap_or_default(),
         dns: l.first_non_empty(|c| &c.dns),
         host_resolver: l.pick(|c| c.host_resolver.as_ref()).unwrap_or(true),
@@ -748,7 +732,7 @@ fn resolve_probe(p: &Probe, index: usize) -> Result<ResolvedProbe> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{MemoryPolicy, Network, Ssh, User};
+    use crate::schema::{Network, Ssh, User};
 
     const HOST_RAM_32G: u64 = 32 * ByteSize::GIB;
 
@@ -787,8 +771,6 @@ mod tests {
         assert_eq!(r.timezone, DEFAULT_TIMEZONE);
         assert_eq!(r.network.mode, NetworkMode::Shared);
         assert_eq!(r.network.mac_address, mac_address_for("demo"));
-        assert!(!r.memory_policy.pressure_balloon);
-        assert_eq!(r.memory_policy.min_available, DEFAULT_MIN_AVAILABLE);
         assert!(!r.ssh.load_dot_ssh_pub_keys);
         assert!(!r.ssh.forward_agent);
         assert!(r.host_resolver);
@@ -851,16 +833,18 @@ mod tests {
         assert_eq!(r.timezone, "Europe/Berlin");
         // Nested scalars follow the same rule.
         let r = resolve(
-            "user: {shell: /bin/zsh}\nmemoryPolicy: {pressureBalloon: true}",
-            Some("user: {name: bob, uid: 1001}\nmemoryPolicy: {pressureBalloon: false, minAvailable: 1GiB}"),
+            "user: {shell: /bin/zsh}\nssh: {forwardAgent: true}",
+            Some(
+                "user: {name: bob, uid: 1001}\nssh: {forwardAgent: false, loadDotSSHPubKeys: true}",
+            ),
             Some("user: {name: carol}"),
         )
         .unwrap();
         assert_eq!(r.user.name, "carol");
         assert_eq!(r.user.uid, 1001);
         assert_eq!(r.user.shell, "/bin/zsh");
-        assert!(r.memory_policy.pressure_balloon);
-        assert_eq!(r.memory_policy.min_available, ByteSize::from_gib(1));
+        assert!(r.ssh.forward_agent);
+        assert!(r.ssh.load_dot_ssh_pub_keys);
     }
 
     #[test]
@@ -1092,10 +1076,6 @@ mod tests {
                 passwordless_sudo: Some(false),
             },
             timezone: Some("Asia/Tokyo".into()),
-            memory_policy: MemoryPolicy {
-                pressure_balloon: Some(true),
-                min_available: Some(ByteSize::from_mib(100)),
-            },
             message: Some("hi".into()),
             host_resolver: Some(false),
             ..Default::default()
@@ -1109,7 +1089,6 @@ mod tests {
         assert!(!r.user.passwordless_sudo);
         assert_eq!(r.user.comment, "Dev");
         assert_eq!(r.timezone, "Asia/Tokyo");
-        assert!(r.memory_policy.pressure_balloon);
         assert_eq!(r.message, "hi");
         assert!(!r.host_resolver);
     }

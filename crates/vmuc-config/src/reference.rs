@@ -312,21 +312,6 @@ const ADVANCED: &[Field] = &[
         "the host's zone, else \"UTC\"",
         "IANA zone name applied inside the guest.",
     ),
-    f(
-        "memoryPolicy",
-        "",
-        "How vmuc takes memory back beyond free page reporting, which is always on.",
-    ),
-    f(
-        "memoryPolicy.pressureBalloon",
-        "false",
-        "Inflate the balloon when macOS reports memory pressure (hysteresis rules in docs/plan.md).",
-    ),
-    f(
-        "memoryPolicy.minAvailable",
-        "\"256MiB\"",
-        "The balloon never pushes the guest's available memory below this.",
-    ),
     f("message", "\"\"", "Printed after `vmuc start`."),
     f(
         "dns",
