@@ -33,6 +33,15 @@ pub const GICR_WINDOW: u64 = 0x0400_0000;
 
 pub const RAM_BASE: u64 = 0x4000_0000;
 
+/// virtiofs DAX windows: 1 GiB each, from the first 1 GiB boundary above
+/// RAM (Linux maps a window in 128 MiB memory sections).
+pub const DAX_WINDOW_SIZE: u64 = 1 << 30;
+
+/// Guest physical base of DAX window `i` for `ram_size` bytes of RAM.
+pub const fn dax_window_base(ram_size: u64, i: u32) -> u64 {
+    (RAM_BASE + ram_size).next_multiple_of(DAX_WINDOW_SIZE) + i as u64 * DAX_WINDOW_SIZE
+}
+
 /// SPI numbers (FDT numbering; the GIC INTID is `32 + spi`).
 pub const PL011_SPI: u32 = 1;
 pub const PL031_SPI: u32 = 2;

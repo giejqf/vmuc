@@ -27,14 +27,16 @@ use crate::devices::pl011::Pl011;
 use crate::devices::pl031::Pl031;
 use crate::fdt::{self, FdtError, FdtParams, TimerIntids};
 use crate::layout::{
-    GICD_BASE, GICR_BASE, GICR_WINDOW, PL011_BASE, PL011_SPI, PL031_BASE, PRIMECELL_SIZE, RAM_BASE,
-    VIRTIO_SLOT_SIZE, VIRTIO_SLOTS, spi_intid, virtio_slot_base, virtio_slot_spi,
+    DAX_WINDOW_SIZE, GICD_BASE, GICR_BASE, GICR_WINDOW, PL011_BASE, PL011_SPI, PL031_BASE,
+    PRIMECELL_SIZE, RAM_BASE, VIRTIO_SLOT_SIZE, VIRTIO_SLOTS, dax_window_base, spi_intid,
+    virtio_slot_base, virtio_slot_spi,
 };
 use crate::loader::{BootLayout, ImageHeader, LoadError};
 use crate::machine::{Machine, VmExit};
 use crate::memory::reclaim::HvStage2;
 use crate::memory::{GuestRam, ReclaimError, ReclaimStats, Reclaimer};
 use crate::vcpu::run_vcpu;
+use crate::window::FileWindow;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VmError {
@@ -58,6 +60,8 @@ pub struct VmConfig {
     pub cpus: u32,
     pub ram_size: u64,
     pub cmdline: String,
+    /// Guest physical space to reserve for virtiofs DAX windows.
+    pub dax_windows: u32,
 }
 
 /// A level-triggered SPI on the in-kernel GIC.
@@ -110,6 +114,8 @@ pub struct VmBuilder {
     gic: Gic,
     ram: GuestRam,
     hv: HvVm,
+    /// DAX windows handed out so far.
+    dax_windows: u32,
 }
 
 impl VmBuilder {
@@ -121,7 +127,7 @@ impl VmBuilder {
                 config.cpus
             )));
         }
-        let hv = create_vm(RAM_BASE + config.ram_size)?;
+        let hv = create_vm(dax_window_base(config.ram_size, config.dax_windows))?;
         let ram = GuestRam::new(RAM_BASE, config.ram_size)?;
         ram.map_into(&hv)?;
 
@@ -151,7 +157,26 @@ impl VmBuilder {
             gic,
             ram,
             hv,
+            dax_windows: 0,
         })
+    }
+
+    /// The next of the DAX windows reserved in [`VmConfig`], for a
+    /// virtio-fs device to map files into.
+    pub fn add_file_window(&mut self) -> Result<Arc<FileWindow>, VmError> {
+        if self.dax_windows == self.config.dax_windows {
+            return Err(VmError::Config(format!(
+                "only {} DAX windows were reserved",
+                self.config.dax_windows
+            )));
+        }
+        let base = dax_window_base(self.config.ram_size, self.dax_windows);
+        self.dax_windows += 1;
+        Ok(Arc::new(FileWindow::new(
+            base,
+            DAX_WINDOW_SIZE,
+            Box::new(crate::window::HvMap),
+        )))
     }
 
     /// Guest RAM for device models and loaders.

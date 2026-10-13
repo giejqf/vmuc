@@ -188,6 +188,7 @@ fn boot_and_wait(
         cpus: info.cpus,
         ram_size: info.memory_bytes,
         cmdline: info.cmdline.clone(),
+        dax_windows: fs_shares.iter().filter(|s| s.mount.dax).count() as u32,
     })?;
     b.add_platform_devices(out.clone())?;
     let disk = OpenOptions::new()

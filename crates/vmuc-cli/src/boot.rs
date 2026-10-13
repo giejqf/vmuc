@@ -120,6 +120,7 @@ pub fn run(args: &BootArgs) -> anyhow::Result<VmExit> {
             cpus: args.cpus,
             ram_size: args.memory,
             cmdline: args.cmdline.clone(),
+            dax_windows: 0,
         })?;
         let uart = builder.add_platform_devices(out.clone())?;
         let hvc = add_devices(&mut builder, args, &out)?;

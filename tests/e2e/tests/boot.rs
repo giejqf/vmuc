@@ -15,6 +15,7 @@ fn config(cpus: u32, test: &str) -> VmConfig {
         cpus,
         ram_size: 512 << 20,
         cmdline: format!("{CMDLINE} vmuc.test={test}"),
+        dax_windows: 0,
     }
 }
 
@@ -70,6 +71,7 @@ fn console_input_reaches_the_shell_and_host_stop_is_prompt() {
         cpus: 2,
         ram_size: 512 << 20,
         cmdline: CMDLINE.into(),
+        dax_windows: 0,
     })
     .unwrap();
     let uart = b.add_platform_devices(out.clone()).unwrap();

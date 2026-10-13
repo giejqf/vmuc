@@ -94,6 +94,7 @@ fn guest_pings_a_peer_through_virtio_net() {
         cpus: 2,
         ram_size: 512 << 20,
         cmdline: "console=ttyAMA0 panic=-1 quiet vmuc.test=net".into(),
+        dax_windows: 0,
     })
     .unwrap();
     b.add_platform_devices(out.clone()).unwrap();

@@ -14,7 +14,9 @@ pub mod memory;
 pub mod psci;
 pub mod vcpu;
 pub mod vm;
+pub mod window;
 
 pub use devices::console::ConsoleOut;
 pub use machine::VmExit;
 pub use vm::{Vm, VmBuilder, VmConfig, VmError};
+pub use window::FileWindow;
