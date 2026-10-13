@@ -27,6 +27,11 @@ WORKLOADS = {
         "dd if=/var/tmp/e1-cache.bin of=/dev/null bs=1M status=none; n=$((n+1)); done; "
         "echo result=$((n*3)) GiB read",
     ),
+    # Reads the same file once, then idles: page cache nobody needs any more.
+    "cold": (
+        "f=/var/tmp/e1-cache.bin; [ -s $f ] || dd if=/dev/urandom of=$f bs=1M count=3072 status=none",
+        "dd if=/var/tmp/e1-cache.bin of=/dev/null bs=1M status=none; sleep {s}",
+    ),
     # Bursts of 2.5 GiB of anonymous memory, held 30 s, freed for 30 s:
     # a link step or a test suite arriving while the balloon is inflated.
     "anon": (
@@ -41,13 +46,16 @@ WORKLOADS = {
         "    time.sleep(30); del b; time.sleep(30)\n"
         "print(f'result={{n}} bursts, slowest {{worst:.1f}} s')\n\"",
     ),
-    # vmuc's own kernel config, built from scratch with -j4.
+    # vmuc's own kernel config without debug info or BTF (pahole alone
+    # outgrows a 4 GiB guest), built from scratch with -j4.
     "build": (
-        "set -e; [ -d /var/tmp/linux ] || { sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+        "set -e; [ -d /var/tmp/linux ] || { sudo apt-get update -qq; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
         "--no-install-recommends build-essential flex bison bc libssl-dev libelf-dev dwarves >/dev/null; "
         "curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.55.tar.xz | tar -C /var/tmp -xJ; "
         "mv /var/tmp/linux-6.18.55 /var/tmp/linux; }",
         "rm -rf /var/tmp/kobj && mkdir -p /var/tmp/kobj && cp /var/tmp/vmuc.config /var/tmp/kobj/.config && "
+        "/var/tmp/linux/scripts/config --file /var/tmp/kobj/.config --disable DEBUG_INFO_BTF "
+        "--disable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT --enable DEBUG_INFO_NONE && "
         "make -s -C /var/tmp/linux O=/var/tmp/kobj ARCH=arm64 olddefconfig >/dev/null && "
         "t=$SECONDS && make -s -C /var/tmp/linux O=/var/tmp/kobj ARCH=arm64 -j4 Image >/dev/null 2>&1; "
         "echo result=build exit $? in $((SECONDS-t)) s",

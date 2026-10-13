@@ -5,7 +5,8 @@
 #
 #   tests/bench/mem-pressure/run.sh NAME WORKLOAD LEVEL [SECONDS]
 #
-# WORKLOAD: idle | cache (re-read a 3 GiB file) | anon (2.5 GiB bursts) |
+# WORKLOAD: idle | cache (re-read a 3 GiB file) | cold (read it once, then
+# idle) | anon (2.5 GiB bursts) |
 # build (vmuc's kernel, -j4; the row's duration is the build's).
 # LEVEL: normal | warn | critical, held with `vmuc _pressure` for the
 # whole run, or pulse (critical and normal alternating every 180 s).
@@ -18,7 +19,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 name=${1:?usage: run.sh NAME WORKLOAD LEVEL [SECONDS]}
-workload=${2:?workload: idle|cache|anon|build}
+workload=${2:?workload: idle|cache|cold|anon|build}
 level=${3:?level: normal|warn|critical|pulse}
 seconds=${4:-600}
 (cd "$root" && cargo build -q --release -p vmuc-cli)
