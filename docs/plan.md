@@ -398,7 +398,9 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
   (`docs/experiments/2026-10-13-e1-pressure-policy.md`); balloon targets
   retired (ADR 0004), and found on the way: double-billed guest RAM
   (ADR 0003).
-- E2 virtiofs DAX via per-file `hv_vm_map` (respect the no-overlap rule).
+- E2 virtiofs DAX via per-file `hv_vm_map` (respect the no-overlap rule):
+  done 2026-10-13 (`docs/experiments/2026-10-13-e2-virtiofs-dax.md`); DAX
+  lands opt-in per share, pending ADR 0005.
 - E3 16 KiB guest pages: fewer stage-2 entries, 32 MiB reporting
   granularity, userspace compatibility survey.
 - E4 inotify propagation for writable mounts.

@@ -15,7 +15,7 @@ vCPUs unless noted.
 | Reclaim-induced vCPU stall | < 5 ms | +13 µs worst gap on an unrelated vCPU at saturation | — | met | [reclaim stall](../experiments/2026-10-11-reclaim-stall.md), `crates/vmuc-hv/tests/stall.rs` |
 | Net single flow host↔guest | > 10 Gbit/s | 87.8 host→guest, 76.5 guest→host (vmnet with TSO, shared-memory rings) | 71.9 / 108.1 (VZ NAT) | met; host→guest above VZ, guest→host 71 % of it | [net-iperf](net-iperf.md) |
 | vsock RPC p50 | < 0.3 ms | 0.138 ms (p99 0.239 ms), new connection per call | — | met | [vsock-rpc](vsock-rpc.md) |
-| virtiofs | ≥ VZ virtiofs on the same host | 3.2 GB/s write, 3.8 GB/s cold read, open+close 78 µs | 2.7 GB/s write, 4.5 GB/s cold read, open+close 72 µs | mixed: ahead on writes and cold stat (8×), behind on cold reads, create, unlink | [fs](fs.md) |
+| virtiofs | ≥ VZ virtiofs on the same host | 3.0–3.2 GB/s write, 3.8 GB/s cold read, open+close 74–78 µs; with DAX (opt-in, `mounts[].dax`): 3.6 GB/s write, 5.8 GB/s read, and reading costs the VM no memory | 2.7 GB/s write, 4.5 GB/s cold read, open+close 72 µs | mixed: ahead on writes and cold stat (8×), behind on cold reads (ahead with DAX), create, unlink | [fs](fs.md), [fs-memory](fs-memory.md) |
 
 The Lima column comes from `tests/bench/lima-vz/run.sh`, which runs the
 same measurements against a throwaway Lima instance (Ubuntu 24.04,
