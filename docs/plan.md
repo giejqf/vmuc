@@ -411,8 +411,13 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
   (`docs/experiments/2026-10-13-e4-inotify-propagation.md`); host changes
   reach guest watchers as local ones do, replayed by guest kernel patch
   0002 from the VMM's FSEvents stream (ADR 0006).
-- E5 Snapshot/restore (needs private file mappings to be excluded from
-  reclaim, as mvm found).
+- E5 Snapshot/restore: done 2026-10-13
+  (`docs/experiments/2026-10-13-e5-snapshot-restore.md`); vCPUs, the
+  GIC and the timers restore exactly through the macOS 15 API, a restore
+  with guest RAM mapped copy-on-write takes ~40 ms and costs only what
+  the guest then writes, and reclaim needs no exception for it (unlike
+  mvm). Prototype in `vmuc _boot`; suspending instances is a separate
+  decision (snapshots stay out of scope for v0.1).
 - E6 APFS sparse accounting: the macOS CI runners report full
   allocation (`st_blocks`) for files written with seek-over-zero holes,
   while Linux reports only the data. Measure on a real Mac whether APFS
