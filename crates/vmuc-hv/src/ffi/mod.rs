@@ -79,13 +79,13 @@ pub const HV_SYS_REG_ID_AA64MMFR0_EL1: u16 = 0xc038;
 pub const HV_SYS_REG_MPIDR_EL1: u16 = 0xc005;
 pub const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
 pub const HV_SYS_REG_TTBR0_EL1: u16 = 0xc100;
-pub const HV_SYS_REG_TTBR1_EL1: u16 = 0xc108;
+pub const HV_SYS_REG_TTBR1_EL1: u16 = 0xc101;
 pub const HV_SYS_REG_TCR_EL1: u16 = 0xc102;
 pub const HV_SYS_REG_MAIR_EL1: u16 = 0xc510;
 pub const HV_SYS_REG_VBAR_EL1: u16 = 0xc600;
 pub const HV_SYS_REG_SP_EL1: u16 = 0xe208;
-pub const HV_SYS_REG_SPSR_EL1: u16 = 0xe200;
-pub const HV_SYS_REG_ELR_EL1: u16 = 0xe201;
+pub const HV_SYS_REG_SPSR_EL1: u16 = 0xc200;
+pub const HV_SYS_REG_ELR_EL1: u16 = 0xc201;
 pub const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 pub const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
 
@@ -115,4 +115,36 @@ pub struct HvVcpuExitException {
 pub struct HvVcpuExitInfo {
     pub reason: u32,
     pub exception: HvVcpuExitException,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `hv_sys_reg_t` is the MRS/MSR encoding: op0, op1, CRn, CRm, op2.
+    const fn enc(op0: u16, op1: u16, crn: u16, crm: u16, op2: u16) -> u16 {
+        (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2
+    }
+
+    #[test]
+    fn system_registers_carry_their_architectural_encoding() {
+        let want = [
+            (HV_SYS_REG_ID_AA64MMFR0_EL1, enc(3, 0, 0, 7, 0)),
+            (HV_SYS_REG_MPIDR_EL1, enc(3, 0, 0, 0, 5)),
+            (HV_SYS_REG_SCTLR_EL1, enc(3, 0, 1, 0, 0)),
+            (HV_SYS_REG_TTBR0_EL1, enc(3, 0, 2, 0, 0)),
+            (HV_SYS_REG_TTBR1_EL1, enc(3, 0, 2, 0, 1)),
+            (HV_SYS_REG_TCR_EL1, enc(3, 0, 2, 0, 2)),
+            (HV_SYS_REG_SPSR_EL1, enc(3, 0, 4, 0, 0)),
+            (HV_SYS_REG_ELR_EL1, enc(3, 0, 4, 0, 1)),
+            (HV_SYS_REG_SP_EL1, enc(3, 4, 4, 1, 0)),
+            (HV_SYS_REG_MAIR_EL1, enc(3, 0, 10, 2, 0)),
+            (HV_SYS_REG_VBAR_EL1, enc(3, 0, 12, 0, 0)),
+            (HV_SYS_REG_CNTV_CTL_EL0, enc(3, 3, 14, 3, 1)),
+            (HV_SYS_REG_CNTV_CVAL_EL0, enc(3, 3, 14, 3, 2)),
+        ];
+        for (ours, arch) in want {
+            assert_eq!(ours, arch, "{ours:#x} should be {arch:#x}");
+        }
+    }
 }
