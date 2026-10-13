@@ -136,6 +136,10 @@ avail = [x["available"] / MIB for x in samples if x["available"]]
 res = next((l.split("result=", 1)[1] for l in result.get("out", []) if "result=" in l),
            f"exit {result.get('status')}")
 sha = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+if os.environ.get("VMUC_KERNEL"):
+    image_sha = subprocess.run(["shasum", "-a", "256", os.environ["VMUC_KERNEL"]],
+                               capture_output=True, text=True).stdout[:12]
+    sha += f", kernel {image_sha}"
 dirty = subprocess.run(["git", "-C", root, "diff", "--quiet", "HEAD", "--", "crates"]).returncode != 0
 mac = subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout.strip()
 chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()

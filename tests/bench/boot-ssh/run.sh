@@ -20,7 +20,7 @@ codesign --force --sign - --entitlements "$root/vmuc.entitlements" "$vmuc" 2>/de
 "$vmuc" stop "$name" >/dev/null 2>&1 || true
 
 python3 -I - "$vmuc" "$name" "$runs" "$root" <<'PY'
-import datetime, statistics, subprocess, sys, time
+import datetime, os, statistics, subprocess, sys, time
 vmuc, name, runs, root = sys.argv[1:]
 starts, totals = [], []
 for _ in range(int(runs)):
@@ -34,7 +34,8 @@ for _ in range(int(runs)):
     subprocess.run([vmuc, "stop", name], check=True, capture_output=True)
 mac = subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout.strip()
 chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()
-kernel = subprocess.run(["shasum", "-a", "256", f"{root}/guest/kernel/out/Image"], capture_output=True, text=True).stdout[:12]
+image = os.environ.get("VMUC_KERNEL") or f"{root}/guest/kernel/out/Image"
+kernel = subprocess.run(["shasum", "-a", "256", image], capture_output=True, text=True).stdout[:12]
 row = (f"| {datetime.date.today()} | {chip}, macOS {mac} | {name} | kernel {kernel} | {runs} | "
        f"{statistics.median(starts):.0f} | {statistics.median(totals):.0f} | {max(totals):.0f} |")
 with open(f"{root}/docs/benchmarks/boot-ssh.md", "a") as f:
