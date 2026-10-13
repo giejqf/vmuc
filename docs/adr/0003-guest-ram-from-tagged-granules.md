@@ -1,8 +1,8 @@
 # ADR 0003 — Guest RAM is built from 128 KiB ledger-tagged granules
 
-**Status:** proposed, 2026-10-13. It changes the "Memory" row of
-plan.md's locked decisions and a memory-manager invariant in AGENTS.md,
-so it takes effect once a maintainer accepts it. Evidence:
+**Status:** accepted, 2026-10-13. It changes the "Memory" row of
+plan.md's locked decisions and a memory-manager invariant in AGENTS.md
+(both updated). Evidence:
 [the guest RAM accounting experiment](../experiments/2026-10-13-guest-ram-accounting.md).
 
 ## Context
@@ -53,9 +53,9 @@ by turning the range back into twice-billed memory.
   granules of 16 KiB (eight times the entries for blocks the guest never
   reports).
 
-## Proposed rule text
+## Rule text
 
-On acceptance, AGENTS.md's memory-manager invariants become:
+AGENTS.md's memory-manager invariants read:
 
 - The only sequence that returns guest memory to macOS is
   `hv_vm_unmap(range)` → fresh ledger-tagged granules over the same host

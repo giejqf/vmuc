@@ -135,13 +135,15 @@ calls `hv_*`.
 ## Memory manager invariants
 
 - The only sequence that returns guest memory to macOS is
-  `hv_vm_unmap(range)` → `mmap(MAP_FIXED|MAP_ANON|MAP_PRIVATE)` over the
-  same host address → `hv_vm_map(range)` → acknowledge the report.
-  `madvise(MADV_DONTNEED)`, `madvise(MADV_FREE_REUSABLE)` and
-  `hv_vm_unmap` alone do **not** release pages the guest has dirtied,
-  whatever a host-side `memset` calibration suggests.
-- Host pages are 16 KiB. Align reported ranges **inward**; never unmap a
-  sub-page range; anything smaller than a host page stays billed.
+  `hv_vm_unmap(range)` → fresh ledger-tagged granules over the same host
+  address (`vmuc_hv::guest_memory::refresh`) → `hv_vm_map(range)` →
+  acknowledge the report. Guest RAM comes only from
+  `guest_memory::allocate`: plain anonymous memory is billed twice for
+  every page the host and the guest both touch (ADR 0003). `madvise`,
+  `MADV_ZERO` and `hv_vm_unmap` alone release nothing, whatever a
+  host-side `memset` calibration suggests.
+- Host pages are 16 KiB and release granules 128 KiB. Align reported
+  ranges **inward** to the granule; anything smaller stays billed.
 - Free page reporting is the bulk path. Balloon inflation hands over
   4 KiB pages one at a time and only reclaims contiguous runs.
 - Reclaim never runs on a vCPU thread.
