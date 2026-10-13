@@ -155,6 +155,9 @@ pub fn attr(st: &libc::stat) -> Attr {
 /// both ways (a private mapping goes stale when the host edits the file),
 /// and, on macOS, not a dataless placeholder (iCloud), whose first touch
 /// would block a vCPU in the hypervisor until it downloads.
+// mode_t is u16 on macOS and u32 on Linux, so the conversions below are
+// needed on one and no-ops on the other.
+#[allow(clippy::useless_conversion)]
 fn dax_mappable(st: &libc::stat) -> bool {
     // SAFETY: geteuid has no preconditions.
     let mine = st.st_uid == unsafe { libc::geteuid() };
