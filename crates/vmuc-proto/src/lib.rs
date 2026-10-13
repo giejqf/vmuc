@@ -168,10 +168,6 @@ pub enum ControlRequest {
         force: bool,
     },
     Forwards,
-    /// Set the balloon target in bytes (0 = fully deflated).
-    BalloonTarget {
-        bytes: u64,
-    },
     /// Ask the guest to drop caches and compact so reporting can drain.
     ReclaimNow,
     /// Act as if macOS reported `level` for the next `seconds`, instead of
@@ -242,8 +238,6 @@ pub struct Stat {
     pub reported: u64,
     /// Cumulative bytes released with unmap/refresh/remap.
     pub released: u64,
-    /// Bytes currently held by the balloon (inflation), 0 when off.
-    pub balloon: u64,
     /// p50 / p99 release latency per 2 MiB range, microseconds.
     pub release_p50_us: u32,
     pub release_p99_us: u32,

@@ -53,10 +53,6 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
             super::memory::simulate(shared, level, Duration::from_secs(seconds.into()));
             ControlResponse::Ok
         }
-        ControlRequest::BalloonTarget { bytes } => {
-            shared.balloon.set_target(bytes);
-            ControlResponse::Ok
-        }
         ControlRequest::VsockConnect { port } => {
             let reply = Box::new(|stream: &mut _, r: Result<(), String>| {
                 let resp = match r {

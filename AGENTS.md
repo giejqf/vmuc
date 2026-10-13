@@ -144,17 +144,18 @@ calls `hv_*`.
   host-side `memset` calibration suggests.
 - Host pages are 16 KiB and release granules 128 KiB. Align reported
   ranges **inward** to the granule; anything smaller stays billed.
-- Free page reporting is the bulk path. Balloon inflation hands over
-  4 KiB pages one at a time and only reclaims contiguous runs.
+- Free page reporting is the only release path. The balloon device
+  exists for reporting and the guest's stats; vmuc never sets a balloon
+  target (`num_pages` stays 0).
 - Reclaim never runs on a vCPU thread.
 - A failed remap leaves a hole in guest RAM. Retry once, then stop the
   VM loudly. Never acknowledge a report whose range is not mapped back.
-- Host-driven balloon targets are off by default and gated by the
-  hysteresis rules in `docs/plan.md`. Two known failure modes to never
-  reintroduce: a headroom rule that collapses an idle guest to its
-  floor, and a pressure loop that oscillates every few minutes. Any
-  change to the policy needs a `docs/experiments/` entry with numbers
-  from `tests/bench/mem-reclaim`.
+- There are no host-driven balloon targets (ADR 0004): in E1 they never
+  returned more than dropping caches, collapsed an idle guest to its
+  floor, oscillated under pressure and starved bursts of allocation.
+  The pressure responder drops caches and compacts, nothing more. A new
+  host-driven shrink of any kind needs a `docs/experiments/` entry in
+  which it beats that on `tests/bench/mem-pressure`.
 - Guest kernel keeps `INIT_ON_FREE_DEFAULT_ON=n` and `PAGE_POISONING=n`;
   both would re-dirty pages the guest is about to report.
 

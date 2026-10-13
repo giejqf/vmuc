@@ -3,12 +3,11 @@
 //! numbers, `reclaim_now`, and the host-pressure responder.
 //!
 //! Free page reporting runs all the time without any of this. The
-//! responder only reacts to macOS memory pressure, by the rules in
-//! [`policy`]; the balloon part is off unless the instance sets
-//! `memoryPolicy.pressureBalloon`. Its limits exist because looser
-//! policies collapsed idle guests and oscillated (feasibility.md).
-
-mod policy;
+//! responder only reacts to macOS memory pressure: on warn or critical it
+//! asks the guest to drop its caches and compact, at most every
+//! [`RECLAIM_EVERY`], so cache nobody needs goes back through reporting.
+//! vmuc never sets a balloon target: in E1 it never returned more than
+//! dropping caches did and pinned memory the guest needed (ADR 0004).
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
@@ -16,10 +15,10 @@ use std::time::{Duration, Instant};
 
 use vmuc_proto::{AgentRequest, AgentResponse, PressureLevel, Stat};
 
-use self::policy::{Action, Policy, Round};
 use super::{Shared, ready};
 
 const POLL: Duration = Duration::from_secs(5);
+pub const RECLAIM_EVERY: Duration = Duration::from_secs(30);
 
 /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warn, 4 critical.
 fn host_pressure() -> PressureLevel {
@@ -104,7 +103,6 @@ pub fn stat(shared: &Shared) -> Stat {
         guest_available,
         reported: r.reported.load(Ordering::Relaxed),
         released: r.released.load(Ordering::Relaxed),
-        balloon: shared.balloon.actual(),
         release_p50_us: r.latency_quantile_us(500),
         release_p99_us: r.latency_quantile_us(990),
         host_cpu_nanos: cpu_time(),
@@ -147,49 +145,30 @@ pub fn spawn_responder(shared: Arc<Shared>) {
 }
 
 fn respond(shared: &Shared) {
-    let mut policy = Policy::new(
-        shared.pressure_balloon,
-        shared.min_available,
-        Instant::now(),
-    );
     while !shared.machine.stopping() {
         std::thread::sleep(POLL);
         let now = Instant::now();
-        let balloon = shared.balloon.actual();
-        let round = Round {
-            now,
-            level: pressure(shared, now),
-            last_reclaim: *shared
-                .last_reclaim
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-            balloon,
-            available: shared.balloon.stats().map(|(_, s)| s.available),
-            stall: (balloon > 0).then(|| guest_stall(shared)).flatten(),
-        };
-        for action in policy.step(&round) {
-            match action {
-                Action::Reclaim => {
-                    tracing::info!(level = ?round.level, "host memory pressure; asking the guest to drop caches");
-                    if let Err(e) = reclaim_now(shared) {
-                        tracing::warn!("reclaim on pressure: {e}");
-                    }
-                }
-                Action::Balloon(target, why) => {
-                    tracing::info!(target, ?why, balloon, "balloon target");
-                    shared.balloon.set_target(target);
-                }
+        let level = pressure(shared, now);
+        let last = *shared
+            .last_reclaim
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if reclaim_due(level, last, now) {
+            tracing::info!(
+                ?level,
+                "host memory pressure; asking the guest to drop caches"
+            );
+            if let Err(e) = reclaim_now(shared) {
+                tracing::warn!("reclaim on pressure: {e}");
             }
         }
     }
 }
 
-/// The guest's memory PSI `some` over the last 10 s, percent.
-fn guest_stall(shared: &Shared) -> Option<f32> {
-    match ready::agent_call(&shared.vsock, &AgentRequest::Psi, Duration::from_secs(2)) {
-        Ok(AgentResponse::Psi(p)) => Some(p.some_avg10),
-        _ => None,
-    }
+/// Warn or critical, and nobody asked the guest to reclaim in the last
+/// [`RECLAIM_EVERY`].
+fn reclaim_due(level: PressureLevel, last: Option<Instant>, now: Instant) -> bool {
+    level != PressureLevel::Normal && last.is_none_or(|t| now.duration_since(t) >= RECLAIM_EVERY)
 }
 
 #[cfg(test)]
@@ -208,6 +187,19 @@ mod tests {
         // Simulating `normal` hides real pressure while it lasts.
         let calm = Some((PressureLevel::Normal, later));
         assert_eq!(effective(calm, t0, host), PressureLevel::Normal);
+    }
+
+    #[test]
+    fn pressure_reclaims_at_most_every_30_s() {
+        let t0 = Instant::now();
+        let soon = t0 + Duration::from_secs(5);
+        let later = t0 + RECLAIM_EVERY;
+        assert!(!reclaim_due(PressureLevel::Normal, None, t0));
+        for level in [PressureLevel::Warn, PressureLevel::Critical] {
+            assert!(reclaim_due(level, None, t0));
+            assert!(!reclaim_due(level, Some(t0), soon));
+            assert!(reclaim_due(level, Some(t0), later));
+        }
     }
 
     #[cfg(target_os = "macos")]

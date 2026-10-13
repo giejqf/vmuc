@@ -26,7 +26,7 @@ instances, and nothing graphical beyond the terminal.
 | Hypervisor bindings | Hand-written `extern "C"` in `vmuc-hv`, no bindgen, no `hv`/`applevisor` crates | ~250 lines; type-checks on Linux without an SDK |
 | Interrupts | Apple in-kernel GICv3 always on; no emulated GIC, no fallback | Floors macOS at 15; halves idle CPU and wake latency per ArcBox |
 | Virtio | virtio-mmio transport, split queues, own device models: console, blk, net, vsock, fs, rng, balloon | PCI buys nothing without graphics or passthrough; mmio is what ArcBox, libkrun, Firecracker use |
-| Memory | Ledger-tagged 128 KiB granules lazily populated, mapped once; free page reporting + unmap/fresh granules/remap release on a dedicated thread; host pressure responder; optional balloon target off by default | See `feasibility.md` requirement 3; plain anonymous memory is billed twice for pages host and guest share (ADR 0003) |
+| Memory | Ledger-tagged 128 KiB granules lazily populated, mapped once; free page reporting + unmap/fresh granules/remap release on a dedicated thread; host pressure responder that drops guest caches; no host-driven balloon targets | See `feasibility.md` requirement 3; plain anonymous memory is billed twice for pages host and guest share (ADR 0003); balloon targets never beat dropping caches (ADR 0004) |
 | Guest page size | 4 KiB | Distro userspace compatibility; 16 KiB is experiment E3 |
 | Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). The user-space NAT stack moves to v0.2 as the sudo-free fallback | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames |
 | Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
@@ -156,18 +156,12 @@ Components:
   for `vmuc stat` and the TUI.
 - `PressureResponder`: reads macOS memory pressure (the
   `kern.memorystatus_vm_pressure_level` sysctl, every 5 s; `vmuc
-  _pressure` simulates a level for experiments), with its rules in a
-  unit-tested state machine (`vmuc-cli/src/vmm/memory/policy.rs`). On
-  *warn*: ask the agent to `sync; echo 3 > drop_caches; echo 1 > compact_memory`
-  at most once per 30 s. On *critical*: same, plus, if
-  `memoryPolicy.pressureBalloon: true`, raise the balloon target by ≤ 25%
-  of guest `MemAvailable`, never leaving less than 256 MiB available, at
-  most once per 60 s; return to target 0 when pressure clears for 120 s
-  or guest PSI memory `some` exceeds 10% over 10 s, and after such a
-  stall inflate again only once pressure has cleared. Off by default:
-  E1 found the balloon returns no memory to the host on vmuc and only
-  pins memory the guest needs, while dropping caches returns cold cache
-  at once (`docs/experiments/2026-10-13-e1-pressure-policy.md`).
+  _pressure` simulates a level for experiments). On *warn* or
+  *critical*: ask the agent to `sync; echo 3 > drop_caches; echo 1 >
+  compact_memory` at most once per 30 s. Nothing else: E1 found that a
+  balloon target never returned more than that and pinned memory the
+  guest needed, so there is none (ADR 0004,
+  `docs/experiments/2026-10-13-e1-pressure-policy.md`).
 - Guest side: kernel with `VIRTIO_BALLOON=y`, `PAGE_REPORTING=y`,
   `TRANSPARENT_HUGEPAGE=y`, `INIT_ON_FREE_DEFAULT_ON=n`,
   `PAGE_POISONING=n`; the command line sets
@@ -227,7 +221,7 @@ its design is unchanged from the feasibility study.
 
 `vmm.sock`: newline-delimited JSON `{ "id", "method", "params" }` /
 `{ "id", "result" | "error" }`. Methods: `status`, `stat`, `stop {force}`,
-`forwards`, `console {follow}`, `balloon_target`, `reclaim_now`.
+`forwards`, `console {follow}`, `reclaim_now`, `simulate_pressure`.
 Agent on vsock port 7700: same framing; one request per connection;
 methods: `hello`, `meminfo`, `psi`, `drop_caches`, `compact`,
 `sockets.watch` (streams events), `tunnel {addr}` (then raw bytes),
@@ -332,12 +326,14 @@ machine is required.
 
 ### M5 — Memory manager (2 weeks, Mac)
 
-- Balloon device: F_REPORTING, F_DEFLATE_ON_OOM, F_STATS_VQ.
+- Balloon device: F_REPORTING, F_STATS_VQ (F_DEFLATE_ON_OOM until
+  ADR 0004).
 - Reclaimer thread with the unmap/refresh/remap sequence, accounting,
   `vmuc stat`.
 - Pressure responder (warn → drop/compact), agent `drop_caches`,
   `compact`, `psi`.
-- Optional balloon target with the hysteresis rules; default off.
+- Optional balloon target with the hysteresis rules; default off
+  (retired by ADR 0004).
 - Probes: `bench/mem-reclaim` reproduces lima#2789 (allocate N GiB in
   tmpfs, free, watch host footprint); `bench/stage2-matrix` reproduces
   ArcBox's madvise matrix so a macOS update cannot silently break us.
@@ -399,8 +395,9 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
 ### Experiments queued after v0.1
 
 - E1 Balloon target policy tuning with real workloads: done 2026-10-13
-  (`docs/experiments/2026-10-13-e1-pressure-policy.md`); the balloon stays
-  off, and found on the way: double-billed guest RAM (ADR 0003).
+  (`docs/experiments/2026-10-13-e1-pressure-policy.md`); balloon targets
+  retired (ADR 0004), and found on the way: double-billed guest RAM
+  (ADR 0003).
 - E2 virtiofs DAX via per-file `hv_vm_map` (respect the no-overlap rule).
 - E3 16 KiB guest pages: fewer stage-2 entries, 32 MiB reporting
   granularity, userspace compatibility survey.

@@ -60,8 +60,6 @@ pub struct Shared {
     last_reclaim: Mutex<Option<Instant>>,
     /// A pressure level to act on instead of the host's, until the instant.
     simulated: Mutex<Option<(vmuc_proto::PressureLevel, Instant)>>,
-    pressure_balloon: bool,
-    min_available: u64,
     forwards: Mutex<Vec<Forward>>,
     addrs: Mutex<Vec<std::net::IpAddr>>,
     /// The NIC's traffic counters, when there is a NIC.
@@ -244,8 +242,6 @@ fn boot_and_wait(
         reclaim,
         last_reclaim: Mutex::new(None),
         simulated: Mutex::new(None),
-        pressure_balloon: resolved.memory_policy.pressure_balloon,
-        min_available: resolved.memory_policy.min_available.bytes(),
         forwards: Mutex::new(Vec::new()),
         addrs: Mutex::new(Vec::new()),
         net,
