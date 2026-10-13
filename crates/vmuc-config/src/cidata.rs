@@ -65,6 +65,24 @@ pub struct SeedMount {
     pub tag: String,
     pub mount_point: String,
     pub writable: bool,
+    /// Mount with `dax=inode`: the server picks the files that are mapped
+    /// through the device's DAX window.
+    pub dax: bool,
+}
+
+impl SeedMount {
+    /// The fstab options.
+    fn options(&self) -> String {
+        let mut o = String::from(if self.writable {
+            "defaults,nofail"
+        } else {
+            "defaults,ro,nofail"
+        });
+        if self.dax {
+            o.push_str(",dax=inode");
+        }
+        o
+    }
 }
 
 /// A fresh per-boot instance ID (cloud-init's `instance-id`).
@@ -251,12 +269,7 @@ fn render_user_data(
                     m.tag.clone(),
                     m.mount_point.clone(),
                     "virtiofs".to_owned(),
-                    if m.writable {
-                        "defaults,nofail"
-                    } else {
-                        "defaults,ro,nofail"
-                    }
-                    .to_owned(),
+                    m.options(),
                     "0".to_owned(),
                     "0".to_owned(),
                 ]
@@ -326,6 +339,10 @@ fn render_env(resolved: &ResolvedConfig, boot_id: &str, mounts: &[SeedMount]) ->
         put(
             &format!("VMUC_MOUNT_{i}_WRITABLE"),
             if m.writable { "1" } else { "0" },
+        );
+        put(
+            &format!("VMUC_MOUNT_{i}_DAX"),
+            if m.dax { "1" } else { "0" },
         );
     }
     for (k, v) in &resolved.param {
@@ -451,11 +468,13 @@ timezone: Europe/Berlin
                 tag: "mount0".into(),
                 mount_point: "/Users/alice".into(),
                 writable: false,
+                dax: false,
             },
             SeedMount {
                 tag: "mount1".into(),
                 mount_point: "/tmp/share".into(),
                 writable: true,
+                dax: true,
             },
         ]
     }
@@ -562,7 +581,7 @@ timezone: Europe/Berlin
         assert_eq!(m[0][1], "/Users/alice");
         assert_eq!(m[0][2], "virtiofs");
         assert_eq!(m[0][3], "defaults,ro,nofail");
-        assert_eq!(m[1][3], "defaults,nofail");
+        assert_eq!(m[1][3], "defaults,nofail,dax=inode");
         assert_eq!(m[1][5], "0");
         assert_eq!(v["timezone"], "Europe/Berlin");
         assert_eq!(v["manage_resolv_conf"], true);
@@ -617,6 +636,7 @@ timezone: Europe/Berlin
             "export VMUC_MOUNT_0_MOUNTPOINT='/Users/alice'",
             "export VMUC_MOUNT_0_WRITABLE='0'",
             "export VMUC_MOUNT_1_WRITABLE='1'",
+            "export VMUC_MOUNT_1_DAX='1'",
             "export VMUC_PARAM_SNAPSHOTTER='o'\\''verlay'",
             "export HTTP_PROXY='http://proxy:3128'",
         ] {

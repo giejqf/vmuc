@@ -182,6 +182,7 @@ fn apply_overrides(cfg: &mut InstanceConfig, o: &CreateOverrides) -> anyhow::Res
             location: location.to_owned(),
             mount_point: None,
             writable,
+            dax: None,
         });
     }
     Ok(())
@@ -300,6 +301,7 @@ pub fn seed_mounts(resolved: &ResolvedConfig) -> Vec<SeedMount> {
             tag: mount_tag(&m.location, &m.mount_point),
             mount_point: m.mount_point.clone(),
             writable: m.writable,
+            dax: m.dax,
         })
         .collect()
 }

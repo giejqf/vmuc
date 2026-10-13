@@ -314,6 +314,7 @@ mod tests {
             location: location.into(),
             mount_point: mount_point.into(),
             writable: false,
+            dax: false,
         };
         let mounts = [m("/Users/me", "/Users/me"), m("/Users/me/src", "/src")];
         assert_eq!(

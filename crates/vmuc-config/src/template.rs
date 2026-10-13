@@ -370,6 +370,9 @@ fn merge_mounts(child: Vec<Mount>, base: Vec<Mount>) -> Vec<Mount> {
             if existing.writable.is_none() {
                 existing.writable = m.writable;
             }
+            if existing.dax.is_none() {
+                existing.dax = m.dax;
+            }
         } else {
             out.push(m);
         }

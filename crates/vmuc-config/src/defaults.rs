@@ -126,6 +126,7 @@ impl Builtin {
             location: "~".to_owned(),
             mount_point: None,
             writable: Some(false),
+            dax: None,
         }]
     }
 
@@ -226,6 +227,7 @@ pub struct ResolvedMount {
     pub location: PathBuf,
     pub mount_point: String,
     pub writable: bool,
+    pub dax: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -498,6 +500,7 @@ fn resolve_mounts(builtin: &Builtin, layers: [&Vec<Mount>; 4]) -> Result<Vec<Res
         location: PathBuf,
         mount_point: Option<String>,
         writable: Option<bool>,
+        dax: Option<bool>,
     }
     let mut merged: Vec<Partial> = Vec::new();
     for mount in layers.into_iter().flatten() {
@@ -523,11 +526,15 @@ fn resolve_mounts(builtin: &Builtin, layers: [&Vec<Mount>; 4]) -> Result<Vec<Res
             if mount.writable.is_some() {
                 existing.writable = mount.writable;
             }
+            if mount.dax.is_some() {
+                existing.dax = mount.dax;
+            }
         } else {
             merged.push(Partial {
                 location,
                 mount_point: mount.mount_point.clone(),
                 writable: mount.writable,
+                dax: mount.dax,
             });
         }
     }
@@ -549,6 +556,7 @@ fn resolve_mounts(builtin: &Builtin, layers: [&Vec<Mount>; 4]) -> Result<Vec<Res
             location: m.location,
             mount_point,
             writable: m.writable.unwrap_or(false),
+            dax: m.dax.unwrap_or(false),
         });
     }
     Ok(out)

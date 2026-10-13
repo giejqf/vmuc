@@ -232,6 +232,10 @@ pub struct Mount {
     pub mount_point: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writable: Option<bool>,
+    /// Map files straight from the host's file cache (virtiofs DAX)
+    /// instead of copying them into the guest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dax: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

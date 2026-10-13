@@ -137,6 +137,11 @@ const BASIC: &[Field] = &[
         "Guest path.",
     ),
     f("mounts[].writable", "false", "Whether the guest may write."),
+    f(
+        "mounts[].dax",
+        "false",
+        "Map files straight from the host's file cache (virtiofs DAX) instead of copying them into the guest's: the guest's page cache holds none of the share's data. Experiment E2; see docs/experiments/2026-10-13-e2-virtiofs-dax.md.",
+    ),
 ];
 
 const ADVANCED: &[Field] = &[
