@@ -42,6 +42,8 @@ pub mod instance {
     pub const CONSOLE_SOCK: &str = "console.sock";
     pub const SSH_CONFIG: &str = "ssh.config";
     pub const BOOT_SESSION: &str = "boot-session";
+    /// A suspended instance's saved state (ADR 0007).
+    pub const SUSPEND_DIR: &str = "suspend";
 }
 
 /// Longest instance name accepted.

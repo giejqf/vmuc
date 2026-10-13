@@ -205,6 +205,9 @@ pub enum ControlRequest {
         level: PressureLevel,
         seconds: u32,
     },
+    /// Save the running instance into its directory and end the VMM
+    /// (ADR 0007); `vmuc start` resumes it.
+    Suspend,
     /// Open a vsock stream to the guest on `port`. After `Ok` the
     /// connection carries raw bytes (used by `vmuc _proxy` and the port
     /// forwarder, which then speak the agent's `Tunnel` protocol).
@@ -230,7 +233,16 @@ pub enum ControlResponse {
     Stat(Stat),
     Ok,
     Forwards(Vec<Forward>),
-    Error { message: String },
+    /// The instance is saved; the VMM exits next.
+    Suspended {
+        /// Bytes of guest RAM written.
+        ram_bytes: u64,
+        /// How long the guest was stopped for, milliseconds.
+        millis: u64,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

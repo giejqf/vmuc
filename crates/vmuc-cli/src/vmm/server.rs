@@ -75,6 +75,13 @@ fn handle(mut s: UnixStream, shared: &Arc<Shared>) {
             return;
         }
         ControlRequest::Forwards => ControlResponse::Forwards(super::forward::list(shared)),
+        ControlRequest::Suspend => match super::suspend::request(shared) {
+            Ok(st) => ControlResponse::Suspended {
+                ram_bytes: st.ram_bytes,
+                millis: st.stopped.as_millis() as u64,
+            },
+            Err(message) => ControlResponse::Error { message },
+        },
     };
     let _ = write_line(&mut s, &resp);
 }

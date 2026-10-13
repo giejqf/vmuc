@@ -27,6 +27,11 @@ pub struct Share {
 }
 
 impl Share {
+    /// The shared directory (canonical).
+    pub fn root(&self) -> &std::path::Path {
+        self.server.fs().root()
+    }
+
     /// What the host-change watcher needs of it.
     pub fn watched(&self) -> Watched {
         Watched {

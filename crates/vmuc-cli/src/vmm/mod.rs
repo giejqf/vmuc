@@ -7,7 +7,8 @@
 //! pid, serves `vmm.sock`, probes readiness into `events.jsonl`, and on
 //! SIGTERM/SIGINT asks the guest to power off (a second signal forces
 //! it). A guest reset re-executes the process for a clean VM; the pid
-//! stays the same.
+//! stays the same. `vmuc suspend` ends the process the other way: the
+//! guest is saved into the instance (ADR 0007).
 
 mod forward;
 mod memory;
@@ -16,11 +17,13 @@ mod ready;
 mod server;
 mod shares;
 mod signals;
+mod suspend;
 mod watch;
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::process::CommandExt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -65,6 +68,13 @@ pub struct Shared {
     addrs: Mutex<Vec<std::net::IpAddr>>,
     /// The NIC's traffic counters, when there is a NIC.
     net: Option<Arc<vmuc_virtio::devices::net::NetCounters>>,
+    /// The instance directory and its disk, for a suspend.
+    dir: PathBuf,
+    disk: PathBuf,
+    /// The machine a resume must rebuild.
+    shape: crate::suspend::Shape,
+    /// To the main thread, which owns the VM.
+    main: mpsc::Sender<suspend::Main>,
 }
 
 impl Shared {
@@ -72,10 +82,14 @@ impl Shared {
         *self.phase.lock().unwrap_or_else(PoisonError::into_inner) = p;
     }
 
+    fn phase(&self) -> Phase {
+        *self.phase.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn status(&self) -> InstanceStatus {
         InstanceStatus {
             name: self.name.clone(),
-            phase: *self.phase.lock().unwrap_or_else(PoisonError::into_inner),
+            phase: self.phase(),
             boot_id: self.boot_id.clone(),
             pid: std::process::id(),
             cpus: self.cpus,
@@ -133,15 +147,21 @@ pub fn run(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     state::write_pid(&inst.dir)?;
     let result = boot_and_wait(home, &inst, signals);
     state::remove_pid(&inst.dir);
-    if matches!(result, Ok(VmExit::Reset)) {
+    if matches!(result, Ok(Ended::Exit(VmExit::Reset))) {
         let exe = std::env::current_exe()?;
         let err = std::process::Command::new(exe).args(["_vmm", name]).exec();
         bail!("re-executing after guest reset: {err}");
     }
     match result? {
-        VmExit::Crashed(why) => bail!("the VM crashed: {why}"),
+        Ended::Exit(VmExit::Crashed(why)) => bail!("the VM crashed: {why}"),
         _ => Ok(()),
     }
+}
+
+/// How the VM ended.
+enum Ended {
+    Exit(VmExit),
+    Suspended,
 }
 
 /// macOS's allocator keeps freed large blocks (the kernel image, the
@@ -164,11 +184,12 @@ fn boot_and_wait(
     home: &VmucHome,
     inst: &Instance,
     signals: signals::Blocked,
-) -> anyhow::Result<VmExit> {
+) -> anyhow::Result<Ended> {
     let resolved = inst.resolved(home)?;
     let events = EventLog::create(&inst.dir)?;
     let agent = assets::agent()?;
     let fs_shares = shares::open(&resolved, &events);
+    let mut shape = suspend::shape(&resolved, &fs_shares);
     let mounts: Vec<_> = fs_shares.iter().map(|s| s.mount.clone()).collect();
     let watched = fs_shares
         .iter()
@@ -196,11 +217,15 @@ fn boot_and_wait(
         dax_windows: fs_shares.iter().filter(|s| s.mount.dax).count() as u32,
     })?;
     let devices = add_devices(&mut b, inst, &resolved, &events, &out)?;
+    if devices.net.is_none() {
+        shape.network = None;
+    }
     // After the NIC, so its slot does not depend on the mounts.
     shares::attach(&mut b, fs_shares)?;
     let vm = start_vm(b)?;
     release_freed_heap();
 
+    let (main_tx, main_rx) = mpsc::channel();
     let shared = Arc::new(Shared {
         name: inst.name.clone(),
         boot_id,
@@ -219,6 +244,10 @@ fn boot_and_wait(
         forwards: Mutex::new(Vec::new()),
         addrs: Mutex::new(Vec::new()),
         net: devices.net,
+        dir: inst.dir.clone(),
+        disk: inst.disk(),
+        shape,
+        main: main_tx.clone(),
     });
     server::spawn(&inst.dir, Arc::clone(&shared))?;
     ready::spawn(Arc::clone(&shared));
@@ -227,10 +256,10 @@ fn boot_and_wait(
     watch::spawn(Arc::clone(&shared), watched)?;
     signals::spawn(signals, Arc::clone(&shared))?;
 
-    let exit = serve(vm, &shared);
+    let ended = serve(vm, &shared, main_tx, &main_rx)?;
     out.close();
     let _ = writer.join();
-    Ok(exit)
+    Ok(ended)
 }
 
 /// What the control server and friends hold of the devices.
@@ -295,11 +324,39 @@ fn start_vm(b: VmBuilder) -> anyhow::Result<Vm> {
     Ok(b.boot(&kernel, None)?)
 }
 
-/// The main thread from here: owns the VM until it exits.
-fn serve(vm: Vm, shared: &Shared) -> VmExit {
-    let exit = vm.wait();
-    shared.events.push(EventKind::Exiting {
-        reason: format!("{exit:?}"),
-    });
-    exit
+/// The main thread from here: owns the VM until it exits or is suspended.
+fn serve(
+    vm: Vm,
+    shared: &Shared,
+    main_tx: mpsc::Sender<suspend::Main>,
+    main_rx: &mpsc::Receiver<suspend::Main>,
+) -> anyhow::Result<Ended> {
+    let machine = Arc::clone(vm.machine());
+    std::thread::Builder::new()
+        .name("vm-exit".into())
+        .spawn(move || {
+            let _ = main_tx.send(suspend::Main::Exit(machine.wait_exit()));
+        })?;
+    let ended = loop {
+        match main_rx.recv() {
+            Ok(suspend::Main::Suspend(reply)) => match suspend::run(&vm, shared) {
+                Ok(stats) => {
+                    let _ = reply.send(Ok(stats));
+                    break Ended::Suspended;
+                }
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                }
+            },
+            Ok(suspend::Main::Exit(exit)) => break Ended::Exit(exit),
+            Err(_) => break Ended::Exit(VmExit::Stopped),
+        }
+    };
+    let reason = match &ended {
+        Ended::Exit(exit) => format!("{exit:?}"),
+        Ended::Suspended => "suspended".to_owned(),
+    };
+    shared.events.push(EventKind::Exiting { reason });
+    drop(vm);
+    Ok(ended)
 }

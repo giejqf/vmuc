@@ -16,6 +16,7 @@ mod lifecycle;
 mod proxy;
 mod stat;
 mod state;
+mod suspend;
 mod terminal;
 mod tui;
 mod vmm;
