@@ -13,10 +13,16 @@
 //! thread and completes chains in whatever order replies come back. Pool
 //! threads never touch guest memory, so they need not be joined before
 //! it is unmapped, and one stuck in the host never holds up shutdown.
+//!
+//! Out of order completion means a snapshot cannot just pick the request
+//! queue up at its used ring: quiescing waits for the requests on the
+//! pool, and one stuck in the host fails it. The share's nodes and open
+//! handles travel as the device's state; DAX mappings do not.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use vmuc_fs::server::Server;
 
@@ -62,8 +68,7 @@ struct Handler {
 impl Handler {
     /// Starts the pool; its threads ring `wake` (the worker's doorbell,
     /// set once the worker exists) with [`HOST_EVENT`] after each reply.
-    fn new(server: Server, wake: &Arc<OnceLock<Arc<ParkDoorbell>>>) -> std::io::Result<Self> {
-        let server = Arc::new(server);
+    fn new(server: Arc<Server>, wake: &Arc<OnceLock<Arc<ParkDoorbell>>>) -> std::io::Result<Self> {
         let (done_tx, done) = mpsc::channel();
         let mut jobs = Vec::with_capacity(POOL);
         for thread in 0..POOL {
@@ -157,9 +162,14 @@ impl Handler {
 
     /// Writes back the replies that have come in.
     fn complete(&mut self, ctx: &mut WorkerCtx) {
+        let done: Vec<Done> = self.done.try_iter().collect();
+        self.finish(ctx, done);
+    }
+
+    fn finish(&mut self, ctx: &mut WorkerCtx, done: Vec<Done>) {
         let (mem, q) = (&ctx.mem, &mut ctx.queues[REQUEST]);
         let mut any = false;
-        while let Ok(d) = self.done.try_recv() {
+        for d in done {
             self.busy[d.thread] = self.busy[d.thread].saturating_sub(1);
             if d.epoch != self.epoch {
                 continue;
@@ -197,10 +207,28 @@ impl QueueHandler for Handler {
         self.epoch += 1;
         self.inflight.clear();
     }
+
+    fn drain(&mut self, ctx: &mut WorkerCtx, deadline: Instant) -> Result<(), String> {
+        self.complete(ctx);
+        while !self.inflight.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(first) = self.done.recv_timeout(left) else {
+                return Err(format!(
+                    "virtio-fs: {} file requests are still running in the host \
+                     (a privacy prompt, a file downloading from iCloud, a FIFO?)",
+                    self.inflight.len()
+                ));
+            };
+            let done = std::iter::once(first).chain(self.done.try_iter()).collect();
+            self.finish(ctx, done);
+        }
+        Ok(())
+    }
 }
 
 pub struct Fs {
     config: [u8; TAG_LEN + 4],
+    server: Arc<Server>,
     worker: Worker,
     /// The DAX window (shared memory region 0), when there is one.
     window: Option<ShmRegion>,
@@ -213,11 +241,13 @@ impl Fs {
         let n = tag.len().min(TAG_LEN);
         config[..n].copy_from_slice(&tag.as_bytes()[..n]);
         config[TAG_LEN..].copy_from_slice(&1u32.to_le_bytes()); // num_request_queues
+        let server = Arc::new(server);
         let wake = Arc::new(OnceLock::new());
-        let worker = Worker::spawn("virtio-fs", Handler::new(server, &wake)?)?;
+        let worker = Worker::spawn("virtio-fs", Handler::new(Arc::clone(&server), &wake)?)?;
         let _ = wake.set(worker.doorbell());
         Ok(Self {
             config,
+            server,
             worker,
             window: None,
         })
@@ -255,6 +285,27 @@ impl VirtioDevice for Fs {
     }
     fn reset(&mut self) {
         self.worker.reset();
+    }
+    fn quiesce(&mut self, timeout: Duration) -> Result<(), String> {
+        self.worker.quiesce(timeout)
+    }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self.server.fs().save_state()).unwrap_or_default()
+    }
+    fn restore_state(&mut self, state: serde_json::Value) -> Result<(), String> {
+        if state.is_null() {
+            return Ok(());
+        }
+        let st = serde_json::from_value(state).map_err(|e| format!("virtio-fs state: {e}"))?;
+        let r = self.server.fs().restore_state(st);
+        if r.lost > 0 {
+            tracing::warn!(
+                lost = r.lost,
+                "virtio-fs: open files gone from the share while suspended"
+            );
+        }
+        tracing::debug!(nodes = r.nodes, handles = r.handles, "virtio-fs restored");
+        Ok(())
     }
     fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.worker.doorbell()
@@ -388,5 +439,54 @@ mod tests {
         assert_eq!(head, open.0);
         assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
         drop(writer);
+    }
+
+    #[test]
+    fn a_quiesce_waits_for_the_requests_running_in_the_host() {
+        let mut h = harness(false);
+        let fifo = h.dir.path().join("fifo");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: valid C string.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let mem = h.rq.mem.clone();
+        let sent = h.send(opcode::LOOKUP, ROOT_ID, b"fifo\0");
+        let node = u64_at(&h.next(&mem, &[sent]).1, 16);
+        let open = h.send(opcode::OPEN, node, &[0; 8]);
+        std::thread::sleep(Duration::from_millis(20));
+        let err = h.fs.quiesce(Duration::from_millis(50)).unwrap_err();
+        assert!(err.contains("1 file requests are still running"), "{err}");
+
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            std::fs::OpenOptions::new().write(true).open(&fifo).unwrap()
+        });
+        h.fs.quiesce(Duration::from_secs(5)).unwrap();
+        assert_eq!(h.rq.used(), vec![(u32::from(open.0), 32)], "finished");
+        drop(writer.join().unwrap());
+    }
+
+    #[test]
+    fn the_share_travels_as_the_devices_state() {
+        let mut h = harness(false);
+        std::fs::write(h.dir.path().join("file"), b"12345").unwrap();
+        let mem = h.rq.mem.clone();
+        let sent = h.send(opcode::LOOKUP, ROOT_ID, b"file\0");
+        let node = u64_at(&h.next(&mem, &[sent]).1, 16);
+        h.fs.quiesce(Duration::from_secs(1)).unwrap();
+        let state = h.fs.save_state();
+
+        let server = Server::new(Passthrough::new(h.dir.path(), false).unwrap());
+        let mut fresh = Fs::new("vmuc-test", server).unwrap();
+        fresh.restore_state(state).unwrap();
+        assert_eq!(
+            fresh.server.fs().rel(node).unwrap(),
+            std::path::Path::new("file")
+        );
+        assert!(fresh.restore_state(serde_json::Value::Null).is_ok());
+        assert!(
+            fresh
+                .restore_state(serde_json::json!({"nodes": 1}))
+                .is_err()
+        );
     }
 }
