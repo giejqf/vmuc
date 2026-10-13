@@ -18,3 +18,4 @@ Target: < 350 MiB.
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `swiotlb=noforce` | ModemManager udisks2 multipathd.socket multipathd unattended-upgrades | 2 | 364 | 342 | 370 | 124 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 1af90d185cee)` | - | 3 | 374 | 355 | 355 | 185 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | - | 3 | 362 | 354 | 354 | 188 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | - | 3 | 289 | 286 | 283 | 203 |

@@ -2,18 +2,22 @@
 //! Returning guest memory to macOS.
 //!
 //! The only sequence that gives back pages a vCPU has dirtied is
-//! `hv_vm_unmap` → `mmap(MAP_FIXED|MAP_ANON|MAP_PRIVATE)` over the same
-//! host address → `hv_vm_map` (`docs/experiments/2026-10-11-stage2-release-matrix.md`).
-//! Ranges are aligned inward to the 16 KiB host page, ranges with
-//! nothing resident are skipped, and a remap that fails twice leaves a
-//! hole in guest RAM: the VM is stopped and the range never acknowledged.
+//! `hv_vm_unmap` → fresh memory over the same host address → `hv_vm_map`
+//! (`docs/experiments/2026-10-11-stage2-release-matrix.md`). Guest RAM is
+//! ledger-tagged granules, which are billed honestly but freed only whole,
+//! so the fresh memory is new granules and ranges are aligned inward to
+//! [`RELEASE_GRANULE`] (`docs/experiments/2026-10-13-guest-ram-accounting.md`).
+//! Ranges with nothing resident are skipped, and a remap that fails twice
+//! leaves a hole in guest RAM: the VM is stopped and the range never
+//! acknowledged.
 //! Reclaim runs on the balloon's worker thread, never on a vCPU.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Instant;
 
-use vmuc_hv::{HOST_PAGE_SIZE, HvVm, MemoryPermission, align_inward};
+use vmuc_hv::guest_memory::{self, RELEASE_GRANULE};
+use vmuc_hv::{HOST_PAGE_SIZE, HvVm, MemoryPermission, align_inward_to};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ReclaimError {
@@ -94,7 +98,7 @@ pub unsafe trait Stage2: Send + Sync {
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String>;
 }
 
-/// Hypervisor.framework and mmap.
+/// Hypervisor.framework and tagged guest memory.
 #[derive(Debug, Default)]
 pub struct HvStage2;
 
@@ -114,22 +118,9 @@ unsafe impl Stage2 for HvStage2 {
     }
 
     unsafe fn refresh(&self, host: *mut u8, len: usize) -> Result<(), String> {
-        // SAFETY: replaces part of our own guest RAM mapping in place; the
-        // range is unmapped from the VM, so no vCPU can touch it.
-        let p = unsafe {
-            libc::mmap(
-                host.cast(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_FIXED | libc::MAP_ANON | libc::MAP_PRIVATE,
-                -1,
-                0,
-            )
-        };
-        if p == libc::MAP_FAILED {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        Ok(())
+        // SAFETY: whole granules of our own guest RAM; the range is
+        // unmapped from the VM, so no vCPU can touch it.
+        unsafe { guest_memory::refresh(host, len) }.map_err(|e| e.to_string())
     }
 
     unsafe fn map(&self, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
@@ -193,7 +184,7 @@ impl Reclaimer {
     }
 
     /// Gives `[gpa, gpa + len)` back to macOS; returns the bytes released
-    /// (0 when no whole host page fits or nothing was resident).
+    /// (0 when no whole granule fits or nothing was resident).
     pub fn release(&self, gpa: u64, len: u64) -> Result<u64, ReclaimError> {
         self.stats.reported.fetch_add(len, Ordering::Relaxed);
         let in_ram = gpa >= self.base
@@ -203,7 +194,7 @@ impl Reclaimer {
         if !in_ram {
             return Err(ReclaimError::OutOfRange { gpa, len });
         }
-        let Some((gpa, len)) = align_inward(gpa, len) else {
+        let Some((gpa, len)) = align_inward_to(gpa, len, RELEASE_GRANULE as u64) else {
             return Ok(0);
         };
         let open = self.gate.read().unwrap_or_else(PoisonError::into_inner);
@@ -235,7 +226,7 @@ impl Reclaimer {
         }
         if let Err(e) = refreshed {
             // Mapped back with the old pages: correct, just not released.
-            tracing::warn!(gpa = format_args!("{gpa:#x}"), len, "refresh mmap: {e}");
+            tracing::warn!(gpa = format_args!("{gpa:#x}"), len, "refresh: {e}");
             return Ok(0);
         }
         self.stats.record(started.elapsed().as_micros() as u64);
@@ -308,25 +299,28 @@ mod tests {
             ..Fake::default()
         });
         let r = reclaimer(&fake, true);
-        // 2 MiB report starting 4 KiB into a host page: 16 KiB trimmed.
-        assert_eq!(r.release(0x4000_1000, 2 << 20).unwrap(), (2 << 20) - 0x4000);
+        // 2 MiB report starting 4 KiB into a granule: one granule trimmed.
+        assert_eq!(
+            r.release(0x4000_1000, 2 << 20).unwrap(),
+            (2 << 20) - 0x2_0000
+        );
         assert_eq!(
             *fake.calls.lock().unwrap(),
             [
-                "unmap 0x40004000+0x1fc000",
-                "refresh 0x1fc000",
-                "map 0x40004000+0x1fc000"
+                "unmap 0x40020000+0x1e0000",
+                "refresh 0x1e0000",
+                "map 0x40020000+0x1e0000"
             ]
         );
         assert_eq!(
-            r.release(0x4000_1000, 0x2000).unwrap(),
+            r.release(0x4000_0000, 0x1_c000).unwrap(),
             0,
-            "no whole host page"
+            "no whole granule"
         );
-        assert_eq!(r.stats().released.load(Ordering::Relaxed), 0x1f_c000);
+        assert_eq!(r.stats().released.load(Ordering::Relaxed), 0x1e_0000);
         assert_eq!(
             r.stats().reported.load(Ordering::Relaxed),
-            (2 << 20) + 0x2000
+            (2 << 20) + 0x1_c000
         );
         assert!(r.stats().latency_quantile_us(500) > 0);
     }

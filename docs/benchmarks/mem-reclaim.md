@@ -30,3 +30,6 @@ moves by a batch from run to run.
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | 739 | 2774 | 99 | 2.1 | 370 | 25 / 500 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | 757 | 2829 | 100 | 1.0 | 403 | 25 / 500 |
 | 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | memtest | `(kernel 090cd98c03a0)` | 762 | 2799 | 99 | 0.5 | 375 | 25 / 500 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | 1243 | 3274 | 99 | 2.1 | 295 | 250 / 1000 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | 1245 | 3284 | 99 | 1.5 | 293 | 250 / 1000 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ubuntu | `(kernel 090cd98c03a0)` | 1237 | 3272 | 99 | 1.0 | 281 | 250 / 1000 |

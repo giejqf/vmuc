@@ -26,7 +26,7 @@ instances, and nothing graphical beyond the terminal.
 | Hypervisor bindings | Hand-written `extern "C"` in `vmuc-hv`, no bindgen, no `hv`/`applevisor` crates | ~250 lines; type-checks on Linux without an SDK |
 | Interrupts | Apple in-kernel GICv3 always on; no emulated GIC, no fallback | Floors macOS at 15; halves idle CPU and wake latency per ArcBox |
 | Virtio | virtio-mmio transport, split queues, own device models: console, blk, net, vsock, fs, rng, balloon | PCI buys nothing without graphics or passthrough; mmio is what ArcBox, libkrun, Firecracker use |
-| Memory | Anonymous `mmap` lazily populated, mapped once; free page reporting + unmap/refresh/remap release on a dedicated thread; host pressure responder; optional balloon target off by default | See `feasibility.md` requirement 3 |
+| Memory | Ledger-tagged 128 KiB granules lazily populated, mapped once; free page reporting + unmap/fresh granules/remap release on a dedicated thread; host pressure responder; optional balloon target off by default | See `feasibility.md` requirement 3; plain anonymous memory is billed twice for pages host and guest share (ADR 0003) |
 | Guest page size | 4 KiB | Distro userspace compatibility; 16 KiB is experiment E3 |
 | Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). The user-space NAT stack moves to v0.2 as the sudo-free fallback | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames |
 | Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
@@ -137,13 +137,16 @@ Global: `~/.vmuc/_config/{user,user.pub,default.yaml,override.yaml}`,
 
 Components:
 
-- `GuestRam`: one anonymous `MAP_PRIVATE|MAP_ANON` region, 16 KiB
-  aligned, never pre-touched. Mapped once with `hv_vm_map` RWX. Host
-  cost at boot is the kernel image plus whatever the guest touches.
+- `GuestRam`: one region reserved like `hv_vm_allocate` reserves it and
+  backed by a ledger-tagged memory entry per 128 KiB granule
+  (`vmuc_hv::guest_memory`), never pre-touched. Mapped once with
+  `hv_vm_map` RWX. Host cost at boot is the kernel image plus whatever
+  the guest touches, each page billed once (ADR 0003).
 - `Reclaimer` (on the balloon device's own worker thread, never a vCPU):
-  consumes ranges from the balloon device's reporting queue. For each: align inward to 16 KiB; skip if nothing is
-  resident (`mincore`); `hv_vm_unmap` → `mmap(MAP_FIXED|MAP_ANON|MAP_PRIVATE)`
-  at the same host address → `hv_vm_map` RWX → ack. A remap failure is
+  consumes ranges from the balloon device's reporting queue. For each:
+  align inward to the 128 KiB granule; skip if nothing is resident
+  (`mincore`); `hv_vm_unmap` → fresh granules at the same host address →
+  `hv_vm_map` RWX → ack. A remap failure is
   fatal for the instance (the guest would have a hole in RAM); the
   error path tries once more, then stops the VM with a clear message.
   Batches consecutive descriptors into one unmap/map when contiguous.
