@@ -27,6 +27,9 @@ use crate::abi::{Attr, ROOT_ID, setattr};
 use crate::host::{self, linux};
 use crate::inodes::Inodes;
 
+mod state;
+pub use state::{Open, Restored, ShareState};
+
 pub type R<T> = Result<T, i32>;
 
 /// RENAME2 flags (Linux `RENAME_NOREPLACE`, `RENAME_EXCHANGE`).
@@ -48,7 +51,7 @@ pub enum Handle {
     Dir(Vec<DirEntry>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DirEntry {
     pub name: Vec<u8>,
     pub ino: u64,

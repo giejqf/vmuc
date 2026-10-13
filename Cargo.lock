@@ -1793,6 +1793,7 @@ name = "vmuc-fs"
 version = "0.1.0-dev"
 dependencies = [
  "libc",
+ "serde",
  "tempfile",
  "thiserror",
  "tracing",

@@ -119,6 +119,31 @@ impl Inodes {
         }
     }
 
+    /// Every node, by ID, and the next ID: for a snapshot.
+    pub fn save(&self) -> (Vec<(u64, Node)>, u64) {
+        let mut nodes: Vec<_> = self.by_id.iter().map(|(&id, n)| (id, n.clone())).collect();
+        nodes.sort_unstable_by_key(|(id, _)| *id);
+        (nodes, self.next)
+    }
+
+    /// Replaces the table with saved nodes. The root stays if they lack
+    /// it; of two nodes now on one file, the older answers for the file.
+    pub fn restore(&mut self, mut nodes: Vec<(u64, Node)>, next: u64) {
+        nodes.sort_unstable_by_key(|(id, _)| *id);
+        let root = self.by_id.remove(&ROOT_ID);
+        self.by_id = nodes.into_iter().collect();
+        if let Some(root) = root {
+            self.by_id.entry(ROOT_ID).or_insert(root);
+        }
+        let mut ids: Vec<u64> = self.by_id.keys().copied().collect();
+        ids.sort_unstable();
+        self.by_key.clear();
+        for id in &ids {
+            self.by_key.entry(self.by_id[id].key).or_insert(*id);
+        }
+        self.next = next.max(ids.last().map_or(ROOT_ID, |&id| id) + 1);
+    }
+
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
@@ -154,6 +179,41 @@ mod tests {
         let b = t.intern("dir/b".into(), (1, 10));
         assert_eq!(a, b);
         assert_eq!(t.get(a).unwrap().rel, Path::new("dir/b"));
+    }
+
+    #[test]
+    fn a_saved_table_comes_back_with_its_ids() {
+        let mut t = Inodes::new((1, 1));
+        let a = t.intern("a".into(), (1, 10));
+        let b = t.intern("b".into(), (1, 11));
+        t.forget(a, 1);
+        let (nodes, next) = t.save();
+
+        let mut fresh = Inodes::new((2, 1));
+        // Both files are now one (a hard link made while away).
+        let moved: Vec<_> = nodes
+            .into_iter()
+            .map(|(id, mut n)| {
+                if id == b {
+                    n.key = (2, 20);
+                }
+                (id, n)
+            })
+            .chain([(
+                b + 1,
+                Node {
+                    rel: "c".into(),
+                    key: (2, 20),
+                    lookups: 1,
+                },
+            )])
+            .collect();
+        fresh.restore(moved, next);
+        assert!(fresh.get(a).is_none());
+        assert_eq!(fresh.get(b).unwrap().rel, Path::new("b"));
+        assert_eq!(fresh.intern("b".into(), (2, 20)), b, "the older node");
+        assert_eq!(fresh.get(ROOT_ID).unwrap().key, (1, 1), "the saved root");
+        assert_eq!(fresh.intern("d".into(), (2, 30)), b + 2, "IDs carry on");
     }
 
     #[test]

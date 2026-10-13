@@ -87,6 +87,25 @@ pub fn errno_of(e: &io::Error) -> i32 {
     e.raw_os_error().map_or(linux::EIO, to_linux)
 }
 
+/// Where an open file is now: it follows renames, and an unlinked file
+/// keeps its last path.
+pub fn fd_path(fd: std::os::fd::RawFd) -> io::Result<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let mut buf = vec![0u8; libc::PATH_MAX as usize];
+        // SAFETY: F_GETPATH writes at most MAXPATHLEN bytes, NUL included.
+        if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        buf.truncate(len);
+        Ok(std::ffi::OsString::from_vec(buf).into())
+    }
+    #[cfg(not(target_os = "macos"))]
+    std::fs::read_link(format!("/proc/self/fd/{fd}"))
+}
+
 /// Linux aarch64 open flags (`asm/fcntl.h`) the guest sends.
 mod lflag {
     pub const O_ACCMODE: u32 = 0o3;
