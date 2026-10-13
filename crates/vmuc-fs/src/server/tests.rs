@@ -374,10 +374,13 @@ fn dax_requests_reach_the_window_only_when_there_is_one() {
     let mut plain = fs(false);
     let b = plain.ok(opcode::INIT, 0, &init_body(init::MAP_ALIGNMENT));
     assert_eq!(u64::from(u32_at(&b, 12)) & init::MAP_ALIGNMENT, 0);
-    let (_, fh) = plain.create(ROOT_ID, "f");
+    let (node, _) = plain.create(ROOT_ID, "f");
     let mut req = Writer::default();
-    req.u64(fh).u64(0).u64(2 << 20).u64(0).u64(0);
-    assert_eq!(plain.call(opcode::SETUPMAPPING, 0, &req.0).0, linux::ENOSYS);
+    req.u64(u64::MAX).u64(0).u64(2 << 20).u64(0).u64(0);
+    assert_eq!(
+        plain.call(opcode::SETUPMAPPING, node, &req.0).0,
+        linux::ENOSYS
+    );
 
     let window = Arc::new(FakeWindow::default());
     let dir = tempfile::tempdir().unwrap();
@@ -390,24 +393,29 @@ fn dax_requests_reach_the_window_only_when_there_is_one() {
     let b = f.ok(opcode::INIT, 0, &init_body(init::MAP_ALIGNMENT));
     assert_ne!(u64::from(u32_at(&b, 12)) & init::MAP_ALIGNMENT, 0);
     assert_eq!(u16::from_le_bytes([b[30], b[31]]), dax::MAP_ALIGNMENT_SHIFT);
-    let (_, fh) = f.create(ROOT_ID, "f");
+    // Linux sends fh -1 and names the node.
+    let (node, _) = f.create(ROOT_ID, "f");
     let mut req = Writer::default();
-    req.u64(fh)
+    req.u64(u64::MAX)
         .u64(2 << 20)
         .u64(2 << 20)
         .u64(dax::SETUPMAPPING_WRITE)
         .u64(4 << 20);
-    f.ok(opcode::SETUPMAPPING, 0, &req.0);
-    // Misaligned, outside the window, an unknown handle.
-    for (fh, foffset, moffset, e) in [
-        (fh, 4096, 0, linux::EINVAL),
-        (fh, 0, 63 << 20, linux::EINVAL),
-        (fh + 99, 0, 0, linux::EBADF),
-    ] {
+    f.ok(opcode::SETUPMAPPING, node, &req.0);
+    // Misaligned, outside the window.
+    for (foffset, moffset) in [(4096, 0), (0, 63 << 20)] {
         let mut req = Writer::default();
-        req.u64(fh).u64(foffset).u64(2 << 20).u64(0).u64(moffset);
-        assert_eq!(f.call(opcode::SETUPMAPPING, 0, &req.0).0, e);
+        req.u64(u64::MAX)
+            .u64(foffset)
+            .u64(2 << 20)
+            .u64(0)
+            .u64(moffset);
+        assert_eq!(f.call(opcode::SETUPMAPPING, node, &req.0).0, linux::EINVAL);
     }
+    // A node that does not exist.
+    let mut req = Writer::default();
+    req.u64(u64::MAX).u64(0).u64(2 << 20).u64(0).u64(0);
+    assert_ne!(f.call(opcode::SETUPMAPPING, node + 99, &req.0).0, 0);
     let mut req = Writer::default();
     // fuse_removemapping_in is a bare count; the entries follow unpadded.
     req.u32(2).u64(4 << 20).u64(2 << 20).u64(0).u64(2 << 20);
@@ -420,4 +428,55 @@ fn dax_requests_reach_the_window_only_when_there_is_one() {
             "unmap 0x0+0x200000",
         ]
     );
+}
+
+#[test]
+fn dax_is_offered_per_file_and_respects_read_only_shares() {
+    let window = Arc::new(FakeWindow::default());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mine"), b"x").unwrap();
+    std::fs::write(dir.path().join("locked"), b"x").unwrap();
+    std::fs::set_permissions(
+        dir.path().join("locked"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o444),
+    )
+    .unwrap();
+    let srv = Server::new(Passthrough::new(dir.path(), true).unwrap()).with_dax(window.clone());
+    let mut f = Fs {
+        srv,
+        dir,
+        unique: 0,
+    };
+    let offered = init::MAP_ALIGNMENT | init::INIT_EXT;
+    let mut body = Writer::default();
+    body.u32(7)
+        .u32(41)
+        .u32(128 << 10)
+        .u32(offered as u32)
+        .u32((init::HAS_INODE_DAX >> 32) as u32);
+    body.bytes(&[0; 40]);
+    let b = f.ok(opcode::INIT, 0, &body.0);
+    // flags2 counts only with INIT_EXT in flags.
+    assert_ne!(u64::from(u32_at(&b, 12)) & init::INIT_EXT, 0);
+    assert_ne!(u64::from(u32_at(&b, 32)) << 32 & init::HAS_INODE_DAX, 0);
+    // fuse_entry_out: 40 bytes, then fuse_attr whose flags end it (at 128).
+    let flags = |f: &mut Fs, name: &str| {
+        let b = f.ok(opcode::LOOKUP, ROOT_ID, &Fs::name(name));
+        (u64_at(&b, 0), u32_at(&b, 40 + 84))
+    };
+    let (mine, mine_flags) = flags(&mut f, "mine");
+    let (_, locked_flags) = flags(&mut f, "locked");
+    assert_eq!(mine_flags & abi::ATTR_DAX, abi::ATTR_DAX);
+    assert_eq!(
+        locked_flags & abi::ATTR_DAX,
+        0,
+        "not writable: no shared mapping"
+    );
+    let setup = |f: &mut Fs, flags: u64| {
+        let mut req = Writer::default();
+        req.u64(u64::MAX).u64(0).u64(2 << 20).u64(flags).u64(0);
+        f.call(opcode::SETUPMAPPING, mine, &req.0).0
+    };
+    assert_eq!(setup(&mut f, 0), 0, "a read mapping on a read-only share");
+    assert_eq!(setup(&mut f, dax::SETUPMAPPING_WRITE), linux::EROFS);
 }

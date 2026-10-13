@@ -64,6 +64,7 @@ pub mod init {
     pub const MAX_PAGES: u64 = 1 << 22;
     pub const CACHE_SYMLINKS: u64 = 1 << 23;
     pub const MAP_ALIGNMENT: u64 = 1 << 26;
+    pub const HAS_INODE_DAX: u64 = 1 << 33;
     pub const INIT_EXT: u64 = 1 << 30;
 }
 
@@ -226,7 +227,13 @@ pub struct Attr {
     pub gid: u32,
     pub rdev: u32,
     pub blksize: u32,
+    /// `FUSE_ATTR_*`.
+    pub flags: u32,
 }
+
+/// `fuse_attr.flags`: the guest may map this file through the DAX window
+/// (when it mounted with `dax=inode`).
+pub const ATTR_DAX: u32 = 1 << 1;
 
 impl Attr {
     pub fn write(&self, w: &mut Writer) {
@@ -234,7 +241,7 @@ impl Attr {
         w.u64(self.atime.0).u64(self.mtime.0).u64(self.ctime.0);
         w.u32(self.atime.1).u32(self.mtime.1).u32(self.ctime.1);
         w.u32(self.mode).u32(self.nlink).u32(self.uid).u32(self.gid);
-        w.u32(self.rdev).u32(self.blksize).u32(0);
+        w.u32(self.rdev).u32(self.blksize).u32(self.flags);
     }
 }
 

@@ -482,6 +482,17 @@ impl Passthrough {
         Ok(self.add_handle(Handle::File(file)))
     }
 
+    /// Opens `node` read-write to map it shared into the DAX window: a
+    /// shared mapping needs a writable descriptor even when the guest
+    /// only reads (it gets read-only access in stage 2). A writable
+    /// mapping on a read-only share is refused.
+    pub fn open_for_dax(&self, node: u64, writable: bool) -> R<File> {
+        if writable && self.read_only {
+            return Err(linux::EROFS);
+        }
+        self.open_rel(&self.rel(node)?, libc::O_RDWR, 0)
+    }
+
     pub fn read(&self, fh: u64, offset: u64, size: u32) -> R<Vec<u8>> {
         let h = self.file(fh)?;
         let Handle::File(f) = &*h else {

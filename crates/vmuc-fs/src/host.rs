@@ -7,7 +7,7 @@
 use std::ffi::CString;
 use std::io;
 
-use crate::abi::Attr;
+use crate::abi::{self, Attr};
 
 /// Linux errno values (asm-generic), what the guest expects.
 pub mod linux {
@@ -146,8 +146,30 @@ pub fn attr(st: &libc::stat) -> Attr {
         gid: st.st_gid,
         rdev: st.st_rdev as u32,
         blksize: st.st_blksize as u32,
+        flags: if dax_mappable(st) { abi::ATTR_DAX } else { 0 },
     }
 }
+
+/// Whether the guest may map a file through the DAX window: a regular
+/// file this user can write, so it can be mapped shared and stay coherent
+/// both ways (a private mapping goes stale when the host edits the file),
+/// and, on macOS, not a dataless placeholder (iCloud), whose first touch
+/// would block a vCPU in the hypervisor until it downloads.
+fn dax_mappable(st: &libc::stat) -> bool {
+    // SAFETY: geteuid has no preconditions.
+    let mine = st.st_uid == unsafe { libc::geteuid() };
+    let mode = u32::from(st.st_mode);
+    let regular = mode & u32::from(libc::S_IFMT) == u32::from(libc::S_IFREG);
+    #[cfg(target_os = "macos")]
+    let dataless = st.st_flags & SF_DATALESS != 0;
+    #[cfg(not(target_os = "macos"))]
+    let dataless = false;
+    regular && mine && mode & 0o200 != 0 && !dataless
+}
+
+/// `SF_DATALESS` from `<sys/stat.h>`: the file's data is not on disk.
+#[cfg(target_os = "macos")]
+const SF_DATALESS: u32 = 0x4000_0000;
 
 /// `DT_*` type of a file mode, for directory entries.
 pub fn dirent_type(mode: u32) -> u32 {

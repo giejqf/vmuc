@@ -108,7 +108,8 @@ impl Server {
             opcode::INIT => return init_reply(r, self.dax.is_some()).map_err(bad),
             opcode::SETUPMAPPING => {
                 let window = self.dax.as_deref().ok_or(linux::ENOSYS)?;
-                let (fh, foffset, len, flags, moffset) = (
+                // fh is -1 from Linux: the mapping is of the node itself.
+                let (_fh, foffset, len, flags, moffset) = (
                     r.u64().map_err(bad)?,
                     r.u64().map_err(bad)?,
                     r.u64().map_err(bad)?,
@@ -116,11 +117,9 @@ impl Server {
                     r.u64().map_err(bad)?,
                 );
                 dax::check(window.size(), foffset, moffset, len)?;
-                let h = fs.handle(fh)?;
-                let Handle::File(f) = &*h else {
-                    return Err(linux::EBADF);
-                };
                 let writable = flags & dax::SETUPMAPPING_WRITE != 0;
+                // The mapping keeps the file open; this descriptor goes.
+                let f = fs.open_for_dax(h.nodeid, writable)?;
                 window
                     .map(f.as_raw_fd(), foffset, moffset, len, writable)
                     .map_err(|e| host::errno_of(&e))?;
@@ -429,7 +428,12 @@ fn init_reply(r: &mut Reader, dax: bool) -> Result<Vec<u8>, abi::Truncated> {
         | init::PARALLEL_DIROPS
         | init::MAX_PAGES
         | init::CACHE_SYMLINKS
-        | if dax { init::MAP_ALIGNMENT } else { 0 };
+        | if dax {
+            // INIT_EXT: the guest reads flags2 (HAS_INODE_DAX) only then.
+            init::MAP_ALIGNMENT | init::HAS_INODE_DAX | init::INIT_EXT
+        } else {
+            0
+        };
     let granted = offered & ours;
     let map_alignment = if granted & init::MAP_ALIGNMENT != 0 {
         dax::MAP_ALIGNMENT_SHIFT
