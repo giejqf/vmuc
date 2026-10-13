@@ -117,6 +117,16 @@ pub trait Doorbell: Send + Sync {
     fn ring(&self, queue: u16);
 }
 
+/// A shared memory region (virtio 1.2 §2.10): guest physical memory the
+/// device and driver share outside the queues, such as virtio-fs's DAX
+/// window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShmRegion {
+    pub id: u8,
+    pub base: u64,
+    pub len: u64,
+}
+
 /// A virtio device model behind the MMIO transport.
 pub trait VirtioDevice: Send {
     fn device_type(&self) -> u32;
@@ -131,6 +141,10 @@ pub trait VirtioDevice: Send {
     fn reset(&mut self);
     /// The doorbell for queue kicks; fixed for the device's lifetime.
     fn doorbell(&self) -> Arc<dyn Doorbell>;
+    /// Shared memory regions; fixed for the device's lifetime.
+    fn shm_regions(&self) -> Vec<ShmRegion> {
+        Vec::new()
+    }
 }
 
 /// Doorbell bits: queues 0..=29, then two for the device's own use.

@@ -16,7 +16,7 @@ pub mod mmio;
 pub mod queue;
 
 pub use bus::BusDevice;
-pub use device::{Activation, Doorbell, IrqStatus, VirtioDevice};
+pub use device::{Activation, Doorbell, IrqStatus, ShmRegion, VirtioDevice};
 pub use irq::{Interrupt, TestIrq};
 pub use mem::{Gpa, GuestMemory, MemError, MemResult, Pod};
 pub use mmio::MmioTransport;

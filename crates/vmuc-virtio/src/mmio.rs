@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tracing::{debug, warn};
 
 use crate::bus::{BusDevice, le_value, put_le};
-use crate::device::{Activation, Doorbell, IrqStatus, VirtioDevice, features};
+use crate::device::{Activation, Doorbell, IrqStatus, ShmRegion, VirtioDevice, features};
 use crate::mem::GuestMemory;
 use crate::queue::Queue;
 
@@ -39,6 +39,8 @@ const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
 const SHM_SEL: u64 = 0x0ac;
 const SHM_LEN_LOW: u64 = 0x0b0;
 const SHM_LEN_HIGH: u64 = 0x0b4;
+const SHM_BASE_LOW: u64 = 0x0b8;
+const SHM_BASE_HIGH: u64 = 0x0bc;
 const CONFIG_GENERATION: u64 = 0x0fc;
 const CONFIG: u64 = 0x100;
 
@@ -66,6 +68,8 @@ struct State {
     queues: Vec<Queue>,
     config_generation: u32,
     active: bool,
+    shm: Vec<ShmRegion>,
+    shm_sel: u32,
 }
 
 pub struct MmioTransport {
@@ -93,6 +97,7 @@ impl MmioTransport {
             .map(Queue::new)
             .collect();
         let device_features = device.features() | features::VERSION_1;
+        let shm = device.shm_regions();
         Self {
             doorbell: device.doorbell(),
             state: Mutex::new(State {
@@ -106,6 +111,8 @@ impl MmioTransport {
                 queues,
                 config_generation: 0,
                 active: false,
+                shm,
+                shm_sel: 0,
             }),
             irq,
             mem,
@@ -224,8 +231,19 @@ impl BusDevice for MmioTransport {
             QUEUE_READY => sel_queue.map_or(0, |q| u32::from(q.ready)),
             INTERRUPT_STATUS => self.irq.status(),
             STATUS => s.status,
-            // No shared memory regions: length all ones means absent.
-            SHM_LEN_LOW | SHM_LEN_HIGH => u32::MAX,
+            // Length all ones means the selected region is absent.
+            SHM_LEN_LOW | SHM_LEN_HIGH | SHM_BASE_LOW | SHM_BASE_HIGH => {
+                let r = s.shm.iter().find(|r| u32::from(r.id) == s.shm_sel);
+                let v = match offset {
+                    SHM_LEN_LOW | SHM_LEN_HIGH => r.map_or(u64::MAX, |r| r.len),
+                    _ => r.map_or(u64::MAX, |r| r.base),
+                };
+                if offset & 4 == 0 {
+                    v as u32
+                } else {
+                    (v >> 32) as u32
+                }
+            }
             CONFIG_GENERATION => s.config_generation,
             _ => 0,
         };
@@ -270,7 +288,7 @@ impl BusDevice for MmioTransport {
             }
             INTERRUPT_ACK => self.irq.ack(v),
             STATUS => self.set_status(&mut s, v),
-            SHM_SEL => {}
+            SHM_SEL => s.shm_sel = v,
             _ => debug!(offset, v, "virtio-mmio: ignored write"),
         }
     }
@@ -289,6 +307,7 @@ mod tests {
         activated: Arc<AtomicU32>,
         resets: Arc<AtomicU32>,
         doorbell: Arc<ParkDoorbell>,
+        shm: Vec<ShmRegion>,
     }
 
     impl VirtioDevice for Probe {
@@ -314,6 +333,9 @@ mod tests {
         }
         fn doorbell(&self) -> Arc<dyn Doorbell> {
             self.doorbell.clone()
+        }
+        fn shm_regions(&self) -> Vec<ShmRegion> {
+            self.shm.clone()
         }
     }
 
@@ -374,6 +396,36 @@ mod tests {
         assert_eq!(rd(&t, QUEUE_NUM_MAX), 256);
         assert_eq!(rd(&t, CONFIG + 4), 0x44);
         assert_eq!(rd(&t, SHM_LEN_LOW), u32::MAX);
+    }
+
+    #[test]
+    fn shared_memory_regions_are_found_by_id() {
+        let p = Probe {
+            shm: vec![ShmRegion {
+                id: 0,
+                base: 0x1_4000_0000,
+                len: 0x8000_0000,
+            }],
+            ..Probe::default()
+        };
+        let irq = Arc::new(IrqStatus::new(Arc::new(TestIrq::default())));
+        let t = MmioTransport::new(Box::new(p), GuestMemory::from_vec(0, vec![0; 4096]), irq);
+        wr(&t, SHM_SEL, 0);
+        assert_eq!(
+            [
+                rd(&t, SHM_LEN_LOW),
+                rd(&t, SHM_LEN_HIGH),
+                rd(&t, SHM_BASE_LOW),
+                rd(&t, SHM_BASE_HIGH)
+            ],
+            [0x8000_0000, 0, 0x4000_0000, 1]
+        );
+        wr(&t, SHM_SEL, 1);
+        assert_eq!(
+            [rd(&t, SHM_LEN_LOW), rd(&t, SHM_LEN_HIGH)],
+            [u32::MAX; 2],
+            "absent"
+        );
     }
 
     #[test]
