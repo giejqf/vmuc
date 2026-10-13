@@ -92,6 +92,63 @@ unsafe extern "C" {
     pub fn hv_gic_get_spi_interrupt_range(base: *mut u32, count: *mut u32) -> hv_return_t;
     pub fn hv_gic_get_intid(interrupt: u16, intid: *mut u32) -> hv_return_t;
     pub fn hv_gic_set_state(data: *const c_void, size: usize) -> hv_return_t;
+
+    // State for snapshots (macOS 15+): the SIMD/FP registers, the GIC's
+    // device state (an os_object) and its CPU interface registers.
+    pub fn hv_vcpu_get_simd_fp_reg(
+        vcpu: hv_vcpu_t,
+        reg: u32,
+        value: *mut hv_simd_fp_uchar16_t,
+    ) -> hv_return_t;
+    /// Takes the value by value in Q0, which stable Rust cannot declare;
+    /// called through [`hv_vcpu_set_simd_fp_reg`]'s assembly.
+    #[link_name = "hv_vcpu_set_simd_fp_reg"]
+    fn hv_vcpu_set_simd_fp_reg_sym();
+    pub fn hv_gic_state_create() -> *mut c_void;
+    pub fn hv_gic_state_get_size(state: *mut c_void, size: *mut usize) -> hv_return_t;
+    pub fn hv_gic_state_get_data(state: *mut c_void, data: *mut c_void) -> hv_return_t;
+    pub fn hv_gic_get_icc_reg(vcpu: hv_vcpu_t, reg: u16, value: *mut u64) -> hv_return_t;
+    pub fn hv_gic_set_icc_reg(vcpu: hv_vcpu_t, reg: u16, value: u64) -> hv_return_t;
+}
+
+/// A Q register's 16 bytes (`hv_simd_fp_uchar16_t`, read by pointer).
+pub type hv_simd_fp_uchar16_t = [u8; 16];
+
+pub fn simd_from_bytes(b: [u8; 16]) -> hv_simd_fp_uchar16_t {
+    b
+}
+
+pub fn simd_to_bytes(v: hv_simd_fp_uchar16_t) -> [u8; 16] {
+    v
+}
+
+/// `hv_vcpu_set_simd_fp_reg(vcpu, reg, value)`: AAPCS64 passes the vector
+/// `value` in Q0, which needs the unstable `simd_ffi` in an `extern`
+/// declaration, so the call is made here with the C ABI's clobbers.
+///
+/// # Safety
+/// As for any framework call: `vcpu` belongs to the calling thread.
+pub unsafe fn hv_vcpu_set_simd_fp_reg(
+    vcpu: hv_vcpu_t,
+    reg: u32,
+    value: hv_simd_fp_uchar16_t,
+) -> hv_return_t {
+    let rc: u64;
+    // SAFETY: loads 16 readable bytes into Q0 and calls the function with
+    // x0 = vcpu, w1 = reg as the C ABI wants; `clobber_abi("C")` covers
+    // every register the callee may change, and the stack is untouched.
+    unsafe {
+        std::arch::asm!(
+            "ldr q0, [{value}]",
+            "blr {f}",
+            value = in(reg) value.as_ptr(),
+            f = in(reg) hv_vcpu_set_simd_fp_reg_sym as *const () as usize,
+            inlateout("x0") vcpu => rc,
+            in("x1") u64::from(reg),
+            clobber_abi("C"),
+        );
+    }
+    rc as hv_return_t
 }
 
 // Config objects (`hv_vm_config_t`, `hv_gic_config_t`) are os_objects

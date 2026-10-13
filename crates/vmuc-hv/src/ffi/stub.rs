@@ -67,5 +67,23 @@ stubs! {
     fn hv_gic_get_spi_interrupt_range(base: *mut u32, count: *mut u32) -> hv_return_t = UNSUPPORTED;
     fn hv_gic_get_intid(interrupt: u16, intid: *mut u32) -> hv_return_t = UNSUPPORTED;
     fn hv_gic_set_state(data: *const c_void, size: usize) -> hv_return_t = UNSUPPORTED;
+    fn hv_vcpu_get_simd_fp_reg(vcpu: hv_vcpu_t, reg: u32, value: *mut hv_simd_fp_uchar16_t) -> hv_return_t = UNSUPPORTED;
+    fn hv_vcpu_set_simd_fp_reg(vcpu: hv_vcpu_t, reg: u32, value: hv_simd_fp_uchar16_t) -> hv_return_t = UNSUPPORTED;
+    fn hv_gic_state_create() -> *mut c_void = std::ptr::null_mut();
+    fn hv_gic_state_get_size(state: *mut c_void, size: *mut usize) -> hv_return_t = UNSUPPORTED;
+    fn hv_gic_state_get_data(state: *mut c_void, data: *mut c_void) -> hv_return_t = UNSUPPORTED;
+    fn hv_gic_get_icc_reg(vcpu: hv_vcpu_t, reg: u16, value: *mut u64) -> hv_return_t = UNSUPPORTED;
+    fn hv_gic_set_icc_reg(vcpu: hv_vcpu_t, reg: u16, value: u64) -> hv_return_t = UNSUPPORTED;
     fn os_release(object: *mut c_void) -> () = ();
+}
+
+/// Off Apple silicon there are no vector registers to pass.
+pub type hv_simd_fp_uchar16_t = [u8; 16];
+
+pub fn simd_from_bytes(b: [u8; 16]) -> hv_simd_fp_uchar16_t {
+    b
+}
+
+pub fn simd_to_bytes(v: hv_simd_fp_uchar16_t) -> [u8; 16] {
+    v
 }
