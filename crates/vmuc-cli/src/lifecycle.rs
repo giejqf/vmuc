@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `vmuc start`, `stop` and `shell`, and the per-instance `ssh.config`.
+//! `vmuc start`, `stop`, `suspend` and `shell`, and the per-instance
+//! `ssh.config`.
 
 use std::fs::{self, File};
 use std::os::unix::process::CommandExt;
@@ -19,6 +20,8 @@ use crate::{control, keys};
 const STOP_WAIT: Duration = Duration::from_secs(90);
 /// How long `stop --force` waits before killing the VMM outright.
 const FORCE_GRACE: Duration = Duration::from_secs(10);
+/// How long `suspend` waits for the guest to be saved and the VMM to end.
+const SUSPEND_WAIT: Duration = Duration::from_secs(120);
 
 /// The ssh host alias in `ssh.config`.
 pub fn ssh_host(name: &str) -> String {
@@ -204,6 +207,18 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
     let inst = Instance::open(home, name)?;
     let Some(pid) = state::running_pid(&inst.dir) else {
         state::remove_pid(&inst.dir);
+        if crate::suspend::exists(&inst.dir) {
+            if !force {
+                bail!(
+                    "{name} is suspended: `vmuc start {name}` resumes it, and \
+                     `vmuc stop --force {name}` discards it (its programs are lost; its \
+                     files were synced to disk)"
+                );
+            }
+            crate::suspend::remove(&inst.dir)?;
+            eprintln!("discarded the suspended state of {name}; the next start boots");
+            return Ok(());
+        }
         eprintln!("{name} is not running");
         return Ok(());
     };
@@ -232,6 +247,51 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `vmuc suspend`: the VMM saves the running guest into the instance and
+/// ends; `vmuc start` resumes it (ADR 0007).
+pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
+    let inst = Instance::open(home, name)?;
+    let Some(pid) = state::running_pid(&inst.dir) else {
+        if crate::suspend::exists(&inst.dir) {
+            eprintln!("{name} is already suspended");
+            return Ok(());
+        }
+        bail!("{name} is not running");
+    };
+    let started = Instant::now();
+    let (ram_bytes, millis) =
+        match control::request_within(&inst.dir, &ControlRequest::Suspend, SUSPEND_WAIT)? {
+            ControlResponse::Suspended { ram_bytes, millis } => (ram_bytes, millis),
+            ControlResponse::Error { message } => {
+                bail!("cannot suspend {name}: {message}; it keeps running")
+            }
+            other => bail!("suspend: {other:?}"),
+        };
+    while state::pid_alive(pid) {
+        if started.elapsed() > SUSPEND_WAIT {
+            bail!("{name} is saved, but its VMM (pid {pid}) has not exited");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    eprintln!(
+        "suspended {name} in {:.1} s ({} MiB of memory saved; the guest stopped for {millis} ms); \
+         `vmuc start {name}` resumes it",
+        started.elapsed().as_secs_f64(),
+        ram_bytes >> 20
+    );
+    Ok(())
+}
+
+/// The error for a command that needs the instance running.
+pub fn not_running(inst: &Instance) -> anyhow::Error {
+    let name = &inst.name;
+    if crate::suspend::exists(&inst.dir) {
+        anyhow::anyhow!("{name} is suspended; `vmuc start {name}` resumes it")
+    } else {
+        anyhow::anyhow!("{name} is not running; `vmuc start {name}` first")
+    }
+}
+
 /// Replaces this process with `ssh` into the instance, starting in
 /// `workdir` (a guest path) or, by default, wherever the current host
 /// directory appears in the guest through a share.
@@ -243,7 +303,7 @@ pub fn shell(
 ) -> anyhow::Result<()> {
     let inst = Instance::open(home, name)?;
     if state::running_pid(&inst.dir).is_none() {
-        bail!("{name} is not running; `vmuc start {name}` first");
+        return Err(not_running(&inst));
     }
     let mapped = match workdir {
         Some(_) => None,

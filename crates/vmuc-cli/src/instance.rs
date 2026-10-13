@@ -447,6 +447,11 @@ pub fn edit(home: &VmucHome, name: &str) -> anyhow::Result<()> {
                 eprintln!("no changes");
             } else if crate::state::running_pid(&inst.dir).is_some() {
                 eprintln!("{name} is running; the change applies at its next start");
+            } else if crate::suspend::exists(&inst.dir) {
+                eprintln!(
+                    "{name} is suspended: a change to its CPUs, memory, network or shares \
+                     keeps it from resuming until reverted, and others apply at its next boot"
+                );
             }
             Ok(())
         }
@@ -503,11 +508,16 @@ pub fn delete(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `Stopped` without a live VMM, else the phase its latest event shows.
+/// `Stopped` (or `Suspended`) without a live VMM, else the phase its
+/// latest event shows.
 pub fn status(dir: &Path) -> &'static str {
     use vmuc_proto::EventKind;
     if crate::state::running_pid(dir).is_none() {
-        return "Stopped";
+        return if crate::suspend::exists(dir) {
+            "Suspended"
+        } else {
+            "Stopped"
+        };
     }
     let events = crate::state::read_events(dir);
     match events
@@ -622,6 +632,18 @@ mod tests {
         );
         assert_eq!(default_name("/tmp/foo.yaml"), "foo");
         assert_eq!(default_name("https://x/y/docker.yaml"), "docker");
+    }
+
+    #[test]
+    fn a_stopped_instance_with_a_saved_state_is_suspended() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(status(dir.path()), "Stopped");
+        let saved = dir.path().join(files::SUSPEND_DIR);
+        fs::create_dir(&saved).unwrap();
+        fs::write(saved.join("ram.img"), b"").unwrap();
+        assert_eq!(status(dir.path()), "Stopped", "an unfinished suspend");
+        fs::write(saved.join("suspend.json"), b"{}").unwrap();
+        assert_eq!(status(dir.path()), "Suspended");
     }
 
     #[test]

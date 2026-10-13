@@ -19,7 +19,7 @@ pub fn run(home: &VmucHome, recursive: bool, paths: &[String]) -> anyhow::Result
     let (name, args) = scp_args(paths)?;
     let inst = Instance::open(home, &name)?;
     if state::running_pid(&inst.dir).is_none() {
-        bail!("{name} is not running; `vmuc start {name}` first");
+        return Err(crate::lifecycle::not_running(&inst));
     }
     let mut cmd = Command::new("scp");
     cmd.arg("-F").arg(inst.dir.join(files::SSH_CONFIG));

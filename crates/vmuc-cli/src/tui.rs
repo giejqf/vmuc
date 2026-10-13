@@ -85,7 +85,9 @@ impl Source for Local {
         };
         rows.into_iter()
             .map(|r| Instance {
-                live: (r.status != "Stopped").then(|| live(&r.dir)).flatten(),
+                live: (!matches!(r.status, "Stopped" | "Suspended"))
+                    .then(|| live(&r.dir))
+                    .flatten(),
                 name: r.name,
                 status: r.status.to_owned(),
                 cpus: r.cpus,

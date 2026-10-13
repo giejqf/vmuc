@@ -101,12 +101,16 @@ enum Command {
         #[arg(long)]
         foreground: bool,
     },
-    /// Power an instance off (asks the guest; `--force` pulls the plug).
+    /// Power an instance off (asks the guest; `--force` pulls the plug,
+    /// or discards a suspended state).
     Stop {
         name: String,
         #[arg(long, short)]
         force: bool,
     },
+    /// Save a running instance and end its VM; `start` resumes it with
+    /// its programs as they were.
+    Suspend { name: String },
     /// Stop, then start.
     Restart {
         name: String,
@@ -334,7 +338,7 @@ fn main() -> anyhow::Result<()> {
                 Format::Json => println!("{}", serde_json::to_string_pretty(&rows)?),
                 Format::Table => {
                     println!(
-                        "{:<16} {:<8} {:<15} {:>4} {:>8} {:>8}  DIR",
+                        "{:<16} {:<9} {:<15} {:>4} {:>8} {:>8}  DIR",
                         "NAME", "STATUS", "ADDRESS", "CPUS", "MEMORY", "DISK"
                     );
                     for r in &rows {
@@ -345,7 +349,7 @@ fn main() -> anyhow::Result<()> {
                             .or(r.addrs.first())
                             .map_or_else(|| "-".to_owned(), ToString::to_string);
                         println!(
-                            "{:<16} {:<8} {:<15} {:>4} {:>8} {:>8}  {}",
+                            "{:<16} {:<9} {:<15} {:>4} {:>8} {:>8}  {}",
                             r.name,
                             r.status,
                             addr,
@@ -431,6 +435,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Stop { name, force } => lifecycle::stop(&home, &name, force)?,
+        Command::Suspend { name } => lifecycle::suspend(&home, &name)?,
         Command::Restart { name, timeout } => {
             lifecycle::stop(&home, &name, false)?;
             lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
