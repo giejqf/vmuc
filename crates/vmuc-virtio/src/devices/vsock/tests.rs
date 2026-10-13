@@ -277,9 +277,18 @@ fn a_restored_device_tells_the_guest_its_transport_was_reset() {
         "VIRTIO_VSOCK_EVENT_TRANSPORT_RESET"
     );
 
+    // A connection waits for the guest to have handled the reset (it
+    // posts the event buffer again), else the reset would take it too.
+    let (_host, result) = g.connect();
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(g.rx.used().is_empty(), "held back");
+    g.ev.post(&[(buf, 4, true)]);
+    assert_eq!(g.recv().0.op, op::REQUEST);
+    g.send(from_guest(op::RESPONSE, 0, 0, 65536, 0), &[]);
+    assert_eq!(result.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(()));
+
     // Activating again (a snapshot that did not go ahead) says nothing.
     g.vsock.quiesce(Duration::from_secs(1)).unwrap();
-    g.ev.post(&[(buf, 4, true)]);
     g.reactivate();
     std::thread::sleep(Duration::from_millis(20));
     assert!(g.ev.used().is_empty(), "only once");

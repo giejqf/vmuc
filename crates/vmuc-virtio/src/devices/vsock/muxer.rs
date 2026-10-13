@@ -15,6 +15,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use mio::net::UnixStream;
 use mio::{Events, Interest, Poll, Token};
@@ -32,6 +33,8 @@ pub const TX: usize = 1;
 pub const EVENT: usize = 2;
 /// `VIRTIO_VSOCK_EVENT_TRANSPORT_RESET`, the only event.
 const TRANSPORT_RESET: u32 = 0;
+/// How long packets for the guest wait for it to have handled a reset.
+const RESET_HANDLED: Duration = Duration::from_secs(1);
 pub const CONTROL: u32 = 1 << 31;
 const FIRST_HOST_PORT: u32 = 1024;
 
@@ -58,6 +61,9 @@ pub struct Muxer {
     next_port: u32,
     /// A transport reset the guest has yet to hear of.
     reset_pending: bool,
+    /// A reset told, not yet handled: the event queue's avail index then,
+    /// and until when to wait for it to move.
+    reset_told: Option<(u16, Instant)>,
 }
 
 fn rst_for(h: &Hdr) -> Hdr {
@@ -90,13 +96,17 @@ impl Muxer {
             spare: None,
             next_port: FIRST_HOST_PORT,
             reset_pending: false,
+            reset_told: None,
         }
     }
 
     pub fn run(mut self) {
         let mut events = Events::with_capacity(128);
         loop {
-            if let Err(e) = self.poll.poll(&mut events, None) {
+            // Watching for the guest to handle a reset takes a few
+            // milliseconds after a resume; otherwise nothing wakes us idly.
+            let timeout = self.reset_told.map(|_| Duration::from_millis(1));
+            if let Err(e) = self.poll.poll(&mut events, timeout) {
                 if e.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
@@ -130,7 +140,9 @@ impl Muxer {
                 if kicked & (1 << TX) != 0 {
                     self.process_tx();
                 }
-                self.process_rx();
+                if !self.reset_unhandled() {
+                    self.process_rx();
+                }
             }
         }
     }
@@ -274,7 +286,26 @@ impl Muxer {
             ctx.irq.signal_used();
         }
         self.reset_pending = false;
+        if let Ok(idx) = q.avail_idx(mem) {
+            self.reset_told = Some((idx, Instant::now() + RESET_HANDLED));
+        }
         tracing::debug!("vsock: told the guest its transport was reset");
+    }
+
+    /// Whether the guest may not have handled the reset yet. A connection
+    /// request reaching it before would be reset with the rest, silently;
+    /// Linux makes the event buffer available again once it has handled
+    /// the event.
+    fn reset_unhandled(&mut self) -> bool {
+        let (Some((told, deadline)), Some(ctx)) = (self.reset_told, self.ctx.as_ref()) else {
+            return false;
+        };
+        let moved = ctx.queues[EVENT].avail_idx(&ctx.mem).ok() != Some(told);
+        if moved || Instant::now() > deadline {
+            self.reset_told = None;
+            return false;
+        }
+        true
     }
 
     fn process_tx(&mut self) {

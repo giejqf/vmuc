@@ -279,6 +279,11 @@ impl Queue {
         Ok(mem.load_u16_acquire(self.avail + 2)? != self.next_avail)
     }
 
+    /// The driver's avail index: how many buffers it has made available.
+    pub fn avail_idx(&self, mem: &GuestMemory) -> Result<u16, QueueError> {
+        Ok(mem.load_u16_acquire(self.avail + 2)?)
+    }
+
     /// Tells the driver not to kick (without EVENT_IDX; with it, simply
     /// not advancing `avail_event` has the same effect).
     pub fn disable_notification(&mut self, mem: &GuestMemory) -> Result<(), QueueError> {
