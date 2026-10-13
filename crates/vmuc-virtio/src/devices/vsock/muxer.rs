@@ -29,12 +29,18 @@ use crate::queue::DescChain;
 pub const WAKER: Token = Token(0);
 pub const RX: usize = 0;
 pub const TX: usize = 1;
+pub const EVENT: usize = 2;
+/// `VIRTIO_VSOCK_EVENT_TRANSPORT_RESET`, the only event.
+const TRANSPORT_RESET: u32 = 0;
 pub const CONTROL: u32 = 1 << 31;
 const FIRST_HOST_PORT: u32 = 1024;
 
 pub enum Ctrl {
-    Activate(WorkerCtx),
+    /// With whether to tell the guest that its transport was reset.
+    Activate(WorkerCtx, bool),
     Reset(Sender<()>),
+    /// Stop touching the queues, keeping the host's connections.
+    Quiesce(Sender<()>),
     Connect(std::os::unix::net::UnixStream, u32, OnConnect),
     Shutdown,
 }
@@ -50,6 +56,8 @@ pub struct Muxer {
     replies: VecDeque<Hdr>,
     spare: Option<DescChain>,
     next_port: u32,
+    /// A transport reset the guest has yet to hear of.
+    reset_pending: bool,
 }
 
 fn rst_for(h: &Hdr) -> Hdr {
@@ -81,6 +89,7 @@ impl Muxer {
             replies: VecDeque::new(),
             spare: None,
             next_port: FIRST_HOST_PORT,
+            reset_pending: false,
         }
     }
 
@@ -115,6 +124,9 @@ impl Muxer {
                 return;
             }
             if self.ctx.is_some() {
+                if self.reset_pending {
+                    self.announce_reset();
+                }
                 if kicked & (1 << TX) != 0 {
                     self.process_tx();
                 }
@@ -127,9 +139,18 @@ impl Muxer {
     fn control(&mut self) -> bool {
         while let Ok(msg) = self.ctrl.try_recv() {
             match msg {
-                Ctrl::Activate(ctx) => self.ctx = Some(ctx),
+                Ctrl::Activate(ctx, reset) => {
+                    self.ctx = Some(ctx);
+                    self.reset_pending |= reset;
+                }
                 Ctrl::Reset(ack) => {
                     self.drop_all();
+                    let _ = ack.send(());
+                }
+                Ctrl::Quiesce(ack) => {
+                    // The spare chain is taken again on activation.
+                    self.ctx = None;
+                    self.spare = None;
                     let _ = ack.send(());
                 }
                 Ctrl::Connect(stream, guest_port, on_connect) => {
@@ -230,6 +251,30 @@ impl Muxer {
             let h = c.header(guest_cid, op::CREDIT_UPDATE, 0, 0);
             self.replies.push_back(h);
         }
+    }
+
+    /// Tells the guest, after a restore in a new process, that every
+    /// connection it had to the host is gone (its listeners stay).
+    fn announce_reset(&mut self) {
+        let Some(ctx) = self.ctx.as_mut() else {
+            return;
+        };
+        let (mem, q) = (&ctx.mem, &mut ctx.queues[EVENT]);
+        let Ok(Some(chain)) = q.pop(mem) else {
+            // No event buffer yet: again at the next kick.
+            let _ = q.enable_notification(mem);
+            return;
+        };
+        let written = Segments::writable(&chain)
+            .write_from(mem, &TRANSPORT_RESET.to_le_bytes())
+            .unwrap_or(0);
+        let _ = q.add_used(mem, chain.head, written as u32);
+        let _ = q.publish_used(mem);
+        if q.needs_interrupt(mem).unwrap_or(true) {
+            ctx.irq.signal_used();
+        }
+        self.reset_pending = false;
+        tracing::debug!("vsock: told the guest its transport was reset");
     }
 
     fn process_tx(&mut self) {

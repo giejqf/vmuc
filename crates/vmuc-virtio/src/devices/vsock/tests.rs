@@ -207,3 +207,80 @@ fn sends_no_more_than_the_guest_window() {
     let (_, data) = g.recv();
     assert_eq!(data, b"89abcdef");
 }
+
+impl Guest {
+    /// Activates the device again after a quiesce, its queues picking up
+    /// at their used rings as a transport would.
+    fn reactivate(&mut self) {
+        let mut queues = vec![
+            self.rx.queue.clone(),
+            self.tx.queue.clone(),
+            self.ev.queue.clone(),
+        ];
+        for q in &mut queues {
+            q.resume(&self.rx.mem).unwrap();
+        }
+        self.vsock
+            .activate(Activation {
+                mem: self.rx.mem.clone(),
+                queues,
+                irq: Arc::new(IrqStatus::new(Arc::new(TestIrq::default()))),
+                features: features::RING_EVENT_IDX,
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_quiesce_keeps_the_hosts_connections() {
+    let mut g = guest();
+    let (mut host, result) = g.connect();
+    g.recv();
+    g.send(from_guest(op::RESPONSE, 0, 0, 65536, 0), &[]);
+    assert_eq!(result.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(()));
+    g.vsock.quiesce(Duration::from_secs(1)).unwrap();
+    host.write_all(b"held").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(g.rx.used().is_empty(), "quiesced");
+    g.reactivate();
+    let (rw, data) = g.recv();
+    assert_eq!((rw.op, data.as_slice()), (op::RW, &b"held"[..]));
+}
+
+#[test]
+fn a_restored_device_tells_the_guest_its_transport_was_reset() {
+    let mut g = guest();
+    let mut fresh = Vsock::new(GUEST_CID).unwrap();
+    fresh.restore_state(serde_json::Value::Null).unwrap();
+    g.vsock = fresh;
+    g.reactivate();
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(g.ev.used().is_empty(), "no event buffer yet");
+    let buf = g.ev.buffer(&[0xff; 4], 4);
+    let head = g.ev.post(&[(buf, 4, true)]);
+    g.vsock.doorbell().ring(2);
+    let t = Instant::now();
+    let used = loop {
+        let used = g.ev.used();
+        if !used.is_empty() {
+            break used;
+        }
+        assert!(t.elapsed() < Duration::from_secs(5), "no event");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(used, vec![(u32::from(head), 4)]);
+    let mut id = [0xffu8; 4];
+    g.ev.mem.read(buf, &mut id).unwrap();
+    assert_eq!(
+        u32::from_le_bytes(id),
+        0,
+        "VIRTIO_VSOCK_EVENT_TRANSPORT_RESET"
+    );
+
+    // Activating again (a snapshot that did not go ahead) says nothing.
+    g.vsock.quiesce(Duration::from_secs(1)).unwrap();
+    g.ev.post(&[(buf, 4, true)]);
+    g.reactivate();
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(g.ev.used().is_empty(), "only once");
+}

@@ -67,6 +67,8 @@ pub struct Vsock {
     guest_cid: u64,
     connector: VsockConnector,
     thread: Option<JoinHandle<()>>,
+    /// Restored into a new process: the guest's connections are gone.
+    restored: bool,
 }
 
 impl Vsock {
@@ -85,6 +87,7 @@ impl Vsock {
                 doorbell,
             },
             thread: Some(thread),
+            restored: false,
         })
     }
 
@@ -139,7 +142,8 @@ impl VirtioDevice for Vsock {
             irq: act.irq,
             features: act.features,
         };
-        if !self.send(Ctrl::Activate(ctx)) {
+        let reset = std::mem::take(&mut self.restored);
+        if !self.send(Ctrl::Activate(ctx, reset)) {
             return Err("vsock muxer is gone".into());
         }
         self.connector.doorbell.ring_bits(0b11);
@@ -150,6 +154,19 @@ impl VirtioDevice for Vsock {
         if self.send(Ctrl::Reset(tx)) {
             let _ = rx.recv();
         }
+    }
+    /// Keeps the host's connections, so the guest can run on if the
+    /// snapshot does not go ahead.
+    fn quiesce(&mut self, _timeout: std::time::Duration) -> Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        if self.send(Ctrl::Quiesce(tx)) {
+            let _ = rx.recv();
+        }
+        Ok(())
+    }
+    fn restore_state(&mut self, _state: serde_json::Value) -> Result<(), String> {
+        self.restored = true;
+        Ok(())
     }
     fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.connector.doorbell.clone()
