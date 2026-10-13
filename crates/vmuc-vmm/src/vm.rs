@@ -344,6 +344,7 @@ impl VmBuilder {
         }
         let (host, len) = (self.ram.host_ptr(), self.ram.size() as usize);
         let image = dir.join(snapshot::RAM_FILE);
+        let mut ram_image = Vec::new();
         match ram {
             // SAFETY: guest RAM's own mapping; no vCPU or device runs yet.
             RamRestore::Copy => unsafe { snapshot::copy_ram(&image, host, len) }
@@ -352,11 +353,12 @@ impl VmBuilder {
             RamRestore::Map => {
                 self.hv.unmap_memory(RAM_BASE, len)?;
                 // SAFETY: as above, and out of the VM until mapped back.
-                unsafe { snapshot::map_ram(&image, host, len) }.map_err(bad)?;
+                ram_image = unsafe { snapshot::map_ram(&image, host, len) }.map_err(bad)?;
                 self.ram.map_into(&self.hv)?;
             }
         }
-        let vm = self.launch()?;
+        let mut vm = self.launch()?;
+        vm.ram_image = ram_image;
         // The GIC first: restoring it sets every SPI's level as saved, so a
         // line a device raised before would be lowered behind its back.
         Gic::restore_state(&gic_state)?;
@@ -393,6 +395,7 @@ impl VmBuilder {
             transports: self.transports,
             reclaim_gate: self.reclaim_gate,
             stateful: self.stateful,
+            ram_image: Vec::new(),
             config: self.config,
             _gic: self.gic,
             _hv: self.hv,
@@ -442,6 +445,9 @@ pub struct Vm {
     transports: Vec<Arc<MmioTransport>>,
     reclaim_gate: Arc<RwLock<bool>>,
     stateful: Vec<(&'static str, Arc<dyn Stateful>)>,
+    /// Where the image guest RAM was mapped from has data: pages there
+    /// not touched since read from it (see [`snapshot::write_ram`]).
+    ram_image: Vec<std::ops::Range<usize>>,
     config: VmConfig,
     // Dropped in declaration order after `Drop::drop` has joined the
     // vCPUs: GIC, then the VM (hv_vm_destroy), then RAM (munmap).
@@ -512,6 +518,7 @@ impl Vm {
                 self.ram.host_ptr(),
                 self.ram.size() as usize,
                 &dir.join(snapshot::RAM_FILE),
+                &self.ram_image,
             )
         }
         .map_err(io)?;
