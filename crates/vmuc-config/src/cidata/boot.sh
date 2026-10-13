@@ -129,16 +129,22 @@ run_user_scripts() {
 
 # The NIC is optional for network-online (boot and ssh do not wait for
 # DHCP), but provisioning scripts expect the network: wait for eth0's
-# IPv4 address here, at most 30 s. No NIC (no vmnet helper): no wait.
+# IPv4 address and default route here, at most 30 s. Only for those:
+# systemd-networkd-wait-online also waits for IPv6 to finish configuring,
+# which takes the whole 30 s on a network that advertises DHCPv6 without
+# answering it. No NIC (no vmnet helper): no wait.
 wait_for_network() {
 	[ -d /sys/class/net/eth0 ] || return 0
-	for w in /usr/lib/systemd/systemd-networkd-wait-online /lib/systemd/systemd-networkd-wait-online; do
-		if [ -x "${w}" ]; then
-			"${w}" --interface=eth0 --ipv4 --timeout=30 >/dev/null 2>&1 ||
-				WARN "eth0 has no IPv4 address after 30 s; provisioning without network"
+	i=0
+	while [ "${i}" -lt 300 ]; do
+		if ip -4 -o addr show dev eth0 scope global | grep -q inet &&
+			[ -n "$(ip -4 route show default dev eth0)" ]; then
 			return 0
 		fi
+		sleep 0.1
+		i=$((i + 1))
 	done
+	WARN "eth0 has no IPv4 address after 30 s; provisioning without network"
 }
 
 install_agent
