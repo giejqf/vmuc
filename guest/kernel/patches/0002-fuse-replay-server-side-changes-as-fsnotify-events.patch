@@ -1,0 +1,152 @@
+SPDX-License-Identifier: GPL-2.0-only
+(A change to GPL-2.0 Linux source; the rest of vmuc is Apache-2.0.)
+
+Subject: [PATCH] fuse: replay server-side changes as fsnotify events
+
+virtiofs has no channel for the server to report a change, so a file a
+host program edits in a share raises no inotify or fanotify event in
+the guest and the guest's file watchers (dev servers, test runners,
+build watchers) never hear of it. vmuc's guest agent learns of host
+changes over vsock and replays each one with FUSE_VMUC_IOC_REPLAY on
+the parent directory: the guest's cached entry or attributes are
+dropped and watchers get the event a local change would have raised
+(CREATE, DELETE, MODIFY, ATTRIB, CLOSE_WRITE, MOVED_FROM/TO). It needs
+CAP_SYS_ADMIN, and nothing reaches the server but the lookup of an
+entry that exists.
+
+Evidence: docs/experiments/2026-10-13-e4-inotify-propagation.md.
+
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
+@@ -10,6 +10,7 @@
+ 
+ #include <linux/pagemap.h>
+ #include <linux/file.h>
++#include <linux/fsnotify.h>
+ #include <linux/fs_context.h>
+ #include <linux/moduleparam.h>
+ #include <linux/sched.h>
+@@ -1752,7 +1753,113 @@
+ 		err = 0;
+ 	}
+ 	inode_unlock(inode);
++
++	return err;
++}
++
++/*
++ * vmuc: replay a change the server made behind the guest's back.
++ *
++ * virtiofs has no channel for the server to report changes, so a file a
++ * host program edits in a share raises no inotify or fanotify event in
++ * the guest. vmuc's guest agent learns of host changes over vsock and
++ * replays each one on the parent directory with this ioctl: what the
++ * guest cached for the entry is dropped and watchers get the event a
++ * local change would have raised. Nothing reaches the server but the
++ * lookup of an entry that exists.
++ */
++struct fuse_vmuc_replay {
++	__u32	mask;		/* one FUSE_VMUC_REPLAY_EVENTS bit, FS_ISDIR optional */
++	__u32	cookie;		/* pairs MOVED_FROM and MOVED_TO; 0 asks for one */
++	__u32	namelen;
++	__u32	padding;
++	__u64	name;		/* namelen bytes, a single component */
++};
++
++#define FUSE_VMUC_IOC_REPLAY	_IOWR(229, 0x76, struct fuse_vmuc_replay)
++#define FUSE_VMUC_REPLAY_EVENTS	(FS_MODIFY | FS_ATTRIB | FS_CLOSE_WRITE | \
++				 FS_MOVED_FROM | FS_MOVED_TO | FS_CREATE | \
++				 FS_DELETE)
++
++static long fuse_vmuc_replay(struct file *file,
++			     struct fuse_vmuc_replay __user *arg)
++{
++	struct dentry *parent = file->f_path.dentry;
++	struct inode *dir = d_inode(parent);
++	struct fuse_conn *fc = get_fuse_conn(dir);
++	struct fuse_vmuc_replay r;
++	struct inode *child = NULL;
++	struct dentry *entry;
++	struct qstr name;
++	long err = 0;
++	char *buf;
++	u32 event;
++
++	if (!capable(CAP_SYS_ADMIN))
++		return -EPERM;
++	if (copy_from_user(&r, arg, sizeof(r)))
++		return -EFAULT;
++	event = r.mask & ~FS_ISDIR;
++	if (hweight32(event) != 1 || (event & ~FUSE_VMUC_REPLAY_EVENTS) ||
++	    r.padding || !r.namelen || r.namelen > NAME_MAX)
++		return -EINVAL;
++	buf = memdup_user_nul(u64_to_user_ptr(r.name), r.namelen);
++	if (IS_ERR(buf))
++		return PTR_ERR(buf);
++	if (strlen(buf) != r.namelen || strchr(buf, '/') ||
++	    !strcmp(buf, ".") || !strcmp(buf, "..")) {
++		err = -EINVAL;
++		goto out;
++	}
++	if ((event & (FS_MOVED_FROM | FS_MOVED_TO)) && !r.cookie) {
++		r.cookie = fsnotify_get_cookie();
++		if (put_user(r.cookie, &arg->cookie)) {
++			err = -EFAULT;
++			goto out;
++		}
++	}
++
++	name = (struct qstr)QSTR_INIT(buf, r.namelen);
++	if (event & (FS_DELETE | FS_MOVED_FROM)) {
++		/* Gone from the server: report it with what the guest knew. */
++		entry = try_lookup_noperm(&name, parent);
++		if (IS_ERR(entry)) {
++			err = PTR_ERR(entry);
++			goto out;
++		}
++		if (entry && d_really_is_positive(entry))
++			child = igrab(d_inode(entry));
++		dput(entry);
++		fuse_reverse_inval_entry(fc, get_node_id(dir), 0, &name, 0);
++		if (child && S_ISDIR(child->i_mode))
++			r.mask |= FS_ISDIR;
++		fsnotify_name(r.mask, child ?: dir, FSNOTIFY_EVENT_INODE, dir,
++			      &name, r.cookie);
++		iput(child);
++		goto out;
++	}
+ 
++	/* On the server: drop a stale entry for a new name, then look it up. */
++	if (event & (FS_CREATE | FS_MOVED_TO))
++		fuse_reverse_inval_entry(fc, get_node_id(dir), 0, &name, 0);
++	entry = lookup_noperm_positive_unlocked(&name, parent);
++	if (IS_ERR(entry)) {
++		err = PTR_ERR(entry);
++		goto out;
++	}
++	if (d_is_dir(entry))
++		r.mask |= FS_ISDIR;
++	if (event & (FS_CREATE | FS_MOVED_TO)) {
++		fsnotify_name(r.mask, entry, FSNOTIFY_EVENT_DENTRY, dir,
++			      &entry->d_name, r.cookie);
++	} else {
++		/* Attributes and cached pages may be stale. */
++		fuse_reverse_inval_inode(fc, get_node_id(d_inode(entry)), 0, -1);
++		fsnotify_dentry(entry, r.mask);
++	}
++	dput(entry);
++out:
++	kfree(buf);
+ 	return err;
+ }
+ 
+@@ -1761,6 +1868,9 @@
+ {
+ 	struct fuse_conn *fc = get_fuse_conn(file->f_mapping->host);
+ 
++	if (cmd == FUSE_VMUC_IOC_REPLAY)
++		return fuse_vmuc_replay(file, (void __user *)arg);
++
+ 	/* FUSE_IOCTL_DIR only supported for API version >= 7.18 */
+ 	if (fc->minor < 18)
+ 		return -ENOTTY;
