@@ -328,3 +328,96 @@ fn xattrs_are_enosys_unless_enabled() {
     size.u32(0).u32(0);
     assert!(u32_at(&f.ok(opcode::LISTXATTR, node, &size.0), 0) >= 7);
 }
+
+/// Records what the server asked of the window.
+#[derive(Debug, Default)]
+struct FakeWindow {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl DaxWindow for FakeWindow {
+    fn size(&self) -> u64 {
+        64 << 20
+    }
+    fn map(
+        &self,
+        fd: std::os::fd::RawFd,
+        foffset: u64,
+        moffset: u64,
+        len: u64,
+        writable: bool,
+    ) -> std::io::Result<()> {
+        assert!(fd >= 0);
+        self.calls.lock().unwrap().push(format!(
+            "map {foffset:#x} at {moffset:#x}+{len:#x} w={writable}"
+        ));
+        Ok(())
+    }
+    fn unmap(&self, moffset: u64, len: u64) -> std::io::Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("unmap {moffset:#x}+{len:#x}"));
+        Ok(())
+    }
+}
+
+fn init_body(flags: u64) -> Vec<u8> {
+    let mut body = Writer::default();
+    body.u32(7).u32(41).u32(128 << 10).u32(flags as u32).u32(0);
+    body.bytes(&[0; 44]);
+    body.0
+}
+
+#[test]
+fn dax_requests_reach_the_window_only_when_there_is_one() {
+    let mut plain = fs(false);
+    let b = plain.ok(opcode::INIT, 0, &init_body(init::MAP_ALIGNMENT));
+    assert_eq!(u64::from(u32_at(&b, 12)) & init::MAP_ALIGNMENT, 0);
+    let (_, fh) = plain.create(ROOT_ID, "f");
+    let mut req = Writer::default();
+    req.u64(fh).u64(0).u64(2 << 20).u64(0).u64(0);
+    assert_eq!(plain.call(opcode::SETUPMAPPING, 0, &req.0).0, linux::ENOSYS);
+
+    let window = Arc::new(FakeWindow::default());
+    let dir = tempfile::tempdir().unwrap();
+    let srv = Server::new(Passthrough::new(dir.path(), false).unwrap()).with_dax(window.clone());
+    let mut f = Fs {
+        srv,
+        dir,
+        unique: 0,
+    };
+    let b = f.ok(opcode::INIT, 0, &init_body(init::MAP_ALIGNMENT));
+    assert_ne!(u64::from(u32_at(&b, 12)) & init::MAP_ALIGNMENT, 0);
+    assert_eq!(u16::from_le_bytes([b[30], b[31]]), dax::MAP_ALIGNMENT_SHIFT);
+    let (_, fh) = f.create(ROOT_ID, "f");
+    let mut req = Writer::default();
+    req.u64(fh)
+        .u64(2 << 20)
+        .u64(2 << 20)
+        .u64(dax::SETUPMAPPING_WRITE)
+        .u64(4 << 20);
+    f.ok(opcode::SETUPMAPPING, 0, &req.0);
+    // Misaligned, outside the window, an unknown handle.
+    for (fh, foffset, moffset, e) in [
+        (fh, 4096, 0, linux::EINVAL),
+        (fh, 0, 63 << 20, linux::EINVAL),
+        (fh + 99, 0, 0, linux::EBADF),
+    ] {
+        let mut req = Writer::default();
+        req.u64(fh).u64(foffset).u64(2 << 20).u64(0).u64(moffset);
+        assert_eq!(f.call(opcode::SETUPMAPPING, 0, &req.0).0, e);
+    }
+    let mut req = Writer::default();
+    // fuse_removemapping_in is a bare count; the entries follow unpadded.
+    req.u32(2).u64(4 << 20).u64(2 << 20).u64(0).u64(2 << 20);
+    f.ok(opcode::REMOVEMAPPING, 0, &req.0);
+    assert_eq!(
+        *window.calls.lock().unwrap(),
+        [
+            "map 0x200000 at 0x400000+0x200000 w=true",
+            "unmap 0x400000+0x200000",
+            "unmap 0x0+0x200000",
+        ]
+    );
+}

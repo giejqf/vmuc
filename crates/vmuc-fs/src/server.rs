@@ -2,8 +2,10 @@
 //! FUSE request dispatch: one request's bytes in, one reply's bytes out.
 
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 
 use crate::abi::{self, InHeader, Reader, Writer, init, opcode};
+use crate::dax::{self, DaxWindow};
 use crate::host::{self, linux};
 use crate::passthrough::{Handle, Passthrough, R, SetAttr};
 
@@ -21,6 +23,7 @@ const S_IFREG: u32 = 0o100_000;
 pub struct Server {
     fs: Passthrough,
     xattr: bool,
+    dax: Option<Arc<dyn DaxWindow>>,
 }
 
 impl Server {
@@ -29,12 +32,28 @@ impl Server {
     /// on every `ls -l` entry, a round trip each, and macOS has no use for
     /// Linux's namespaces. The first ENOSYS makes it stop asking.
     pub fn new(fs: Passthrough) -> Self {
-        Self { fs, xattr: false }
+        Self {
+            fs,
+            xattr: false,
+            dax: None,
+        }
     }
 
     /// Passes extended attributes through to the host.
     pub fn with_xattrs(fs: Passthrough) -> Self {
-        Self { fs, xattr: true }
+        Self {
+            fs,
+            xattr: true,
+            dax: None,
+        }
+    }
+
+    /// Serves DAX mappings into `window` (the guest uses them when it
+    /// mounts with `dax`).
+    #[must_use]
+    pub fn with_dax(mut self, window: Arc<dyn DaxWindow>) -> Self {
+        self.dax = Some(window);
+        self
     }
 
     pub fn fs(&self) -> &Passthrough {
@@ -86,7 +105,34 @@ impl Server {
             {
                 return Err(linux::ENOSYS);
             }
-            opcode::INIT => return init_reply(r).map_err(bad),
+            opcode::INIT => return init_reply(r, self.dax.is_some()).map_err(bad),
+            opcode::SETUPMAPPING => {
+                let window = self.dax.as_deref().ok_or(linux::ENOSYS)?;
+                let (fh, foffset, len, flags, moffset) = (
+                    r.u64().map_err(bad)?,
+                    r.u64().map_err(bad)?,
+                    r.u64().map_err(bad)?,
+                    r.u64().map_err(bad)?,
+                    r.u64().map_err(bad)?,
+                );
+                dax::check(window.size(), foffset, moffset, len)?;
+                let h = fs.handle(fh)?;
+                let Handle::File(f) = &*h else {
+                    return Err(linux::EBADF);
+                };
+                let writable = flags & dax::SETUPMAPPING_WRITE != 0;
+                window
+                    .map(f.as_raw_fd(), foffset, moffset, len, writable)
+                    .map_err(|e| host::errno_of(&e))?;
+            }
+            opcode::REMOVEMAPPING => {
+                let window = self.dax.as_deref().ok_or(linux::ENOSYS)?;
+                for _ in 0..r.u32().map_err(bad)? {
+                    let (moffset, len) = (r.u64().map_err(bad)?, r.u64().map_err(bad)?);
+                    dax::check(window.size(), 0, moffset, len)?;
+                    window.unmap(moffset, len).map_err(|e| host::errno_of(&e))?;
+                }
+            }
             opcode::DESTROY | opcode::SYNCFS | opcode::INTERRUPT => {}
             opcode::LOOKUP => {
                 let name = r.cstr().map_err(bad)?;
@@ -364,7 +410,8 @@ fn entry((id, attr): (u64, abi::Attr)) -> Vec<u8> {
     w.0
 }
 
-fn init_reply(r: &mut Reader) -> Result<Vec<u8>, abi::Truncated> {
+/// `dax`: a window exists, so map alignment is offered too.
+fn init_reply(r: &mut Reader, dax: bool) -> Result<Vec<u8>, abi::Truncated> {
     let (_major, minor, max_readahead) = (r.u32()?, r.u32()?, r.u32()?);
     let flags = u64::from(r.u32()?);
     let flags2 = if flags & init::INIT_EXT != 0 {
@@ -381,14 +428,23 @@ fn init_reply(r: &mut Reader) -> Result<Vec<u8>, abi::Truncated> {
         | init::READDIRPLUS_AUTO
         | init::PARALLEL_DIROPS
         | init::MAX_PAGES
-        | init::CACHE_SYMLINKS;
+        | init::CACHE_SYMLINKS
+        | if dax { init::MAP_ALIGNMENT } else { 0 };
     let granted = offered & ours;
+    let map_alignment = if granted & init::MAP_ALIGNMENT != 0 {
+        dax::MAP_ALIGNMENT_SHIFT
+    } else {
+        0
+    };
     let mut w = Writer::default();
     w.u32(abi::KERNEL_VERSION)
         .u32(minor.min(abi::KERNEL_MINOR_VERSION))
         .u32(max_readahead);
     w.u32(granted as u32).u16(64).u16(48).u32(MAX_WRITE).u32(1);
-    w.u16(MAX_PAGES).u16(0).u32((granted >> 32) as u32).u32(0);
+    w.u16(MAX_PAGES)
+        .u16(map_alignment)
+        .u32((granted >> 32) as u32)
+        .u32(0);
     w.bytes(&[0; 24]);
     Ok(w.0)
 }

@@ -5,6 +5,7 @@
 //! read from virtqueues; tests feed it bytes.
 
 pub mod abi;
+pub mod dax;
 pub mod host;
 pub mod inodes;
 pub mod passthrough;

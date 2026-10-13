@@ -47,6 +47,8 @@ pub mod opcode {
     pub const READDIRPLUS: u32 = 44;
     pub const RENAME2: u32 = 45;
     pub const LSEEK: u32 = 46;
+    pub const SETUPMAPPING: u32 = 48;
+    pub const REMOVEMAPPING: u32 = 49;
     pub const SYNCFS: u32 = 50;
 }
 
@@ -61,6 +63,7 @@ pub mod init {
     pub const PARALLEL_DIROPS: u64 = 1 << 18;
     pub const MAX_PAGES: u64 = 1 << 22;
     pub const CACHE_SYMLINKS: u64 = 1 << 23;
+    pub const MAP_ALIGNMENT: u64 = 1 << 26;
     pub const INIT_EXT: u64 = 1 << 30;
 }
 
