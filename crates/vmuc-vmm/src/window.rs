@@ -113,6 +113,11 @@ impl FileWindow {
         if host == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
+        // Read ahead into the host mapping: a guest's first touch of each
+        // page is then a stage-2 fault on a page already there, three times
+        // faster for a cold 2 GiB read (E2).
+        // SAFETY: our own fresh mapping.
+        unsafe { libc::madvise(host, len as usize, libc::MADV_WILLNEED) };
         // SAFETY: the mapping stays until the piece is cut or dropped.
         if let Err(e) = unsafe {
             self.stage2
