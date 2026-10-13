@@ -154,15 +154,20 @@ Components:
   release latency histogram, host `phys_footprint` via `proc_pid_rusage`,
   guest `MemTotal`/`MemAvailable` via the agent), exposed on `vmm.sock`
   for `vmuc stat` and the TUI.
-- `PressureResponder`: subscribes to macOS memory pressure
-  (`DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` via libdispatch FFI, with the
-  `kern.memorystatus_vm_pressure_level` sysctl as a poll fallback). On
+- `PressureResponder`: reads macOS memory pressure (the
+  `kern.memorystatus_vm_pressure_level` sysctl, every 5 s; `vmuc
+  _pressure` simulates a level for experiments), with its rules in a
+  unit-tested state machine (`vmuc-cli/src/vmm/memory/policy.rs`). On
   *warn*: ask the agent to `sync; echo 3 > drop_caches; echo 1 > compact_memory`
   at most once per 30 s. On *critical*: same, plus, if
-  `memory.pressure_balloon: true`, raise the balloon target by ≤ 25% of
-  guest `MemAvailable`, never leaving less than 256 MiB available, at
+  `memoryPolicy.pressureBalloon: true`, raise the balloon target by ≤ 25%
+  of guest `MemAvailable`, never leaving less than 256 MiB available, at
   most once per 60 s; return to target 0 when pressure clears for 120 s
-  or guest PSI memory `some` exceeds 10% over 10 s. Off by default.
+  or guest PSI memory `some` exceeds 10% over 10 s, and after such a
+  stall inflate again only once pressure has cleared. Off by default:
+  E1 found the balloon returns no memory to the host on vmuc and only
+  pins memory the guest needs, while dropping caches returns cold cache
+  at once (`docs/experiments/2026-10-13-e1-pressure-policy.md`).
 - Guest side: kernel with `VIRTIO_BALLOON=y`, `PAGE_REPORTING=y`,
   `TRANSPARENT_HUGEPAGE=y`, `INIT_ON_FREE_DEFAULT_ON=n`,
   `PAGE_POISONING=n`; the command line sets
@@ -393,7 +398,9 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
 
 ### Experiments queued after v0.1
 
-- E1 Balloon target policy tuning with real workloads (needs M5 data).
+- E1 Balloon target policy tuning with real workloads: done 2026-10-13
+  (`docs/experiments/2026-10-13-e1-pressure-policy.md`); the balloon stays
+  off, and found on the way: double-billed guest RAM (ADR 0003).
 - E2 virtiofs DAX via per-file `hv_vm_map` (respect the no-overlap rule).
 - E3 16 KiB guest pages: fewer stage-2 entries, 32 MiB reporting
   granularity, userspace compatibility survey.
