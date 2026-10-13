@@ -3,7 +3,7 @@
 //!
 //! A vCPU spins reading the virtual counter and keeps the largest gap
 //! between two reads; meanwhile a host thread runs the reclaim sequence
-//! (unmap, refresh, map) over a different range, as the balloon worker
+//! (unmap, fresh granules, map) over a different range, as the balloon worker
 //! does. The plan's target is no reclaim-induced stall above 5 ms; on an
 //! M4 Pro the worst gap rises from ~27 µs to ~40 µs while ~140k releases
 //! a second run (docs/experiments/2026-10-11-reclaim-stall.md).
@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use vmuc_hv::guest_memory;
 use vmuc_hv::{HvError, HvVcpu, HvVm, MemoryPermission, reg, sys_reg};
 
 const CODE_IPA: u64 = 0x4000_0000;
@@ -85,14 +86,7 @@ fn churn(ram: usize, chunk: usize, stop: &AtomicBool) -> u64 {
                     ram.add(off + page).write_volatile(1);
                 }
                 HvVm::unmap(RAM_IPA + off as u64, chunk).unwrap();
-                libc::mmap(
-                    ram.add(off).cast(),
-                    chunk,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_FIXED | libc::MAP_ANON | libc::MAP_PRIVATE,
-                    -1,
-                    0,
-                );
+                guest_memory::refresh(ram.add(off), chunk).unwrap();
                 HvVm::remap(
                     ram.add(off),
                     RAM_IPA + off as u64,
@@ -121,7 +115,7 @@ fn reclaim_does_not_stall_unrelated_vcpus_long() {
         // SAFETY: within the code page.
         unsafe { code.cast::<u32>().add(i).write(*insn) };
     }
-    let ram = mmap_anon(RAM_SIZE);
+    let ram = guest_memory::allocate(RAM_SIZE).unwrap();
     // SAFETY: both mappings outlive the VM.
     unsafe {
         vm.map_memory(code, CODE_IPA, 0x4000, MemoryPermission::ALL)
