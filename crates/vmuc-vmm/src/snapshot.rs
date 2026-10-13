@@ -174,10 +174,17 @@ unsafe fn write_ram_to(host: *const u8, len: usize, path: &Path) -> io::Result<u
         *written += (end - start) as u64;
         Ok(())
     };
-    let mut vec = [0u8; SCAN];
+    // mincore answers per system page: 16 KiB on Apple silicon, smaller
+    // where the tests also run.
+    // SAFETY: no arguments.
+    let sys = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .unwrap_or(HOST_PAGE_SIZE)
+        .clamp(1, HOST_PAGE_SIZE);
+    let per = HOST_PAGE_SIZE / sys;
+    let mut vec = vec![0u8; SCAN * per];
     for chunk in (0..len).step_by(SCAN * HOST_PAGE_SIZE) {
         let n = (len - chunk).min(SCAN * HOST_PAGE_SIZE);
-        // SAFETY: a mapped range and a vector of a byte per page.
+        // SAFETY: a mapped range and a vector of a byte per system page.
         let resident = unsafe {
             libc::mincore(
                 host.add(chunk).cast_mut().cast(),
@@ -186,7 +193,8 @@ unsafe fn write_ram_to(host: *const u8, len: usize, path: &Path) -> io::Result<u
             )
         };
         for (i, page) in (chunk..chunk + n).step_by(HOST_PAGE_SIZE).enumerate() {
-            let keep = (resident != 0 || vec[i] & 1 != 0) && {
+            let in_core = vec[i * per..(i + 1) * per].iter().any(|v| v & 1 != 0);
+            let keep = (resident != 0 || in_core) && {
                 // SAFETY: a host page inside the range (read only once
                 // resident, so a hole is not faulted in).
                 let bytes = unsafe { std::slice::from_raw_parts(host.add(page), HOST_PAGE_SIZE) };
