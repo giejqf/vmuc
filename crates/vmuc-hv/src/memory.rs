@@ -47,7 +47,12 @@ pub const HOST_PAGE_SIZE: usize = 16 * 1024;
 /// misaligned range outward and discard the neighbours' data.
 #[must_use]
 pub fn align_inward(start: u64, len: u64) -> Option<(u64, u64)> {
-    let page = HOST_PAGE_SIZE as u64;
+    align_inward_to(start, len, HOST_PAGE_SIZE as u64)
+}
+
+/// [`align_inward`] to any power-of-two `page`.
+#[must_use]
+pub fn align_inward_to(start: u64, len: u64, page: u64) -> Option<(u64, u64)> {
     let end = start.checked_add(len)?;
     let a_start = start.div_ceil(page) * page;
     let a_end = (end / page) * page;
