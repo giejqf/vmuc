@@ -27,6 +27,17 @@ pub fn drop_caches() -> io::Result<AgentResponse> {
     Ok(AgentResponse::Ok)
 }
 
+/// Writes `bytes` to the root cgroup's `memory.reclaim`: the kernel
+/// reclaims that much of its coldest memory, as it would under pressure,
+/// instead of dropping every cache. EAGAIN means it found less, which is
+/// still an answer.
+pub fn trim(bytes: u64) -> io::Result<AgentResponse> {
+    match fs::write("/sys/fs/cgroup/memory.reclaim", format!("{bytes}\n")) {
+        Err(e) if e.raw_os_error() != Some(libc::EAGAIN) => Err(e),
+        _ => Ok(AgentResponse::Ok),
+    }
+}
+
 /// `echo 1 > compact_memory`: coalesce free pages into runs large enough
 /// (pageblock order) for the reporting path to notice.
 pub fn compact() -> io::Result<AgentResponse> {

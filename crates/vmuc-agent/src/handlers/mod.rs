@@ -10,7 +10,7 @@ mod time;
 mod tunnel;
 
 pub use exec::exec;
-pub use mem::{compact, drop_caches, meminfo, psi};
+pub use mem::{compact, drop_caches, meminfo, psi, trim};
 pub use net::addresses;
 pub use sockets::sockets_watch;
 pub use time::time_sync;

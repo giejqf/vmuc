@@ -49,6 +49,9 @@ pub enum AgentRequest {
     DropCaches,
     /// `echo 1 > /proc/sys/vm/compact_memory`.
     Compact,
+    /// Reclaim up to `bytes` of the guest's coldest memory through the
+    /// kernel's LRU (`memory.reclaim` of the root cgroup).
+    Trim { bytes: u64 },
     /// Stream [`AgentResponse::SocketEvent`] until the connection closes.
     /// Starts with one `Added` per currently listening socket.
     SocketsWatch,

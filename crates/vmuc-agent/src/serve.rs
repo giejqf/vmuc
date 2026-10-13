@@ -54,6 +54,7 @@ pub fn handle(mut conn: Box<dyn Conn>) -> io::Result<()> {
         AgentRequest::Psi => write_frame(&mut conn, &or_error(handlers::psi())),
         AgentRequest::DropCaches => write_frame(&mut conn, &or_error(handlers::drop_caches())),
         AgentRequest::Compact => write_frame(&mut conn, &or_error(handlers::compact())),
+        AgentRequest::Trim { bytes } => write_frame(&mut conn, &or_error(handlers::trim(bytes))),
         AgentRequest::Addresses => write_frame(&mut conn, &or_error(handlers::addresses())),
         AgentRequest::Exec {
             argv,
