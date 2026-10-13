@@ -12,6 +12,7 @@ fn round(now: Instant, level: PressureLevel) -> Round {
         last_reclaim: None,
         balloon: 0,
         available: Some(3 * GIB),
+        reclaimable: Some(2 * GIB),
         stall: None,
     }
 }
@@ -28,11 +29,11 @@ fn pressure_target_respects_quarter_and_floor() {
 }
 
 #[test]
-fn warn_reclaims_at_most_every_30_s_and_never_balloons() {
+fn warn_trims_a_quarter_at_most_every_30_s_and_never_balloons() {
     let t0 = Instant::now();
     let mut p = Policy::new(true, 256 * MIB, t0);
     let r = round(t0, PressureLevel::Warn);
-    assert_eq!(p.step(&r), [Action::Reclaim]);
+    assert_eq!(p.step(&r), [Action::Trim(GIB / 2)]);
     let r = Round {
         now: t0 + POLL,
         last_reclaim: Some(t0),
@@ -43,7 +44,25 @@ fn warn_reclaims_at_most_every_30_s_and_never_balloons() {
         now: t0 + RECLAIM_EVERY,
         ..r
     };
-    assert_eq!(p.step(&r), [Action::Reclaim]);
+    assert_eq!(p.step(&r), [Action::Trim(GIB / 2)]);
+}
+
+#[test]
+fn a_guest_with_little_to_reclaim_is_left_alone() {
+    let t0 = Instant::now();
+    let r = Round {
+        reclaimable: Some(40 * MIB),
+        ..round(t0, PressureLevel::Critical)
+    };
+    assert_eq!(
+        Policy::new(false, 256 * MIB, t0).step(&r),
+        [Action::Trim(20 * MIB)]
+    );
+    let r = Round {
+        reclaimable: Some(20 * MIB),
+        ..r
+    };
+    assert_eq!(Policy::new(false, 256 * MIB, t0).step(&r), []);
 }
 
 #[test]
@@ -52,11 +71,14 @@ fn critical_balloons_only_when_the_instance_allows_it() {
     let r = round(t0, PressureLevel::Critical);
     assert_eq!(
         Policy::new(false, 256 * MIB, t0).step(&r),
-        [Action::Reclaim]
+        [Action::Trim(GIB)]
     );
     assert_eq!(
         Policy::new(true, 256 * MIB, t0).step(&r),
-        [Action::Reclaim, Action::Balloon(3 * GIB / 4, Why::Critical)]
+        [
+            Action::Trim(GIB),
+            Action::Balloon(3 * GIB / 4, Why::Critical)
+        ]
     );
 }
 
@@ -136,4 +158,41 @@ fn half_an_hour_of_critical_pressure_keeps_an_idle_guest_above_its_floor() {
         );
         t += POLL;
     }
+}
+
+/// ArcBox's second incident: on a pressured host the balloon oscillated.
+/// Once the guest stalls and gets its memory back, the balloon stays down
+/// for the rest of that bout of pressure, and may return after calm.
+#[test]
+fn after_a_stall_the_balloon_waits_for_calm() {
+    let t0 = Instant::now();
+    let mut p = Policy::new(true, 256 * MIB, t0);
+    let crit = |now, balloon, stall| Round {
+        balloon,
+        stall,
+        last_reclaim: Some(now),
+        ..round(now, PressureLevel::Critical)
+    };
+    assert!(matches!(
+        p.step(&crit(t0, 0, None))[..],
+        [Action::Balloon(_, Why::Critical)]
+    ));
+    let t1 = t0 + Duration::from_secs(10);
+    assert_eq!(
+        p.step(&crit(t1, GIB, Some(40.0))),
+        [Action::Balloon(0, Why::Stalling)]
+    );
+    // Ten minutes more of critical pressure: no inflation.
+    let mut t = t1;
+    while t < t1 + Duration::from_mins(10) {
+        t += POLL;
+        assert_eq!(p.step(&crit(t, 0, None)), []);
+    }
+    // Calm, then pressure again: the balloon may inflate.
+    p.step(&round(t + POLL, PressureLevel::Normal));
+    let again = p.step(&crit(t + 2 * POLL, 0, None));
+    assert!(
+        matches!(again[..], [Action::Balloon(_, Why::Critical)]),
+        "{again:?}"
+    );
 }

@@ -156,6 +156,7 @@ fn respond(shared: &Shared) {
         std::thread::sleep(POLL);
         let now = Instant::now();
         let balloon = shared.balloon.actual();
+        let stats = shared.balloon.stats().map(|(_, s)| s);
         let round = Round {
             now,
             level: pressure(shared, now),
@@ -164,15 +165,16 @@ fn respond(shared: &Shared) {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner),
             balloon,
-            available: shared.balloon.stats().map(|(_, s)| s.available),
+            available: stats.map(|s| s.available),
+            reclaimable: stats.map(|s| s.available.saturating_sub(s.free)),
             stall: (balloon > 0).then(|| guest_stall(shared)).flatten(),
         };
         for action in policy.step(&round) {
             match action {
-                Action::Reclaim => {
-                    tracing::info!(level = ?round.level, "host memory pressure; asking the guest to drop caches");
-                    if let Err(e) = reclaim_now(shared) {
-                        tracing::warn!("reclaim on pressure: {e}");
+                Action::Trim(bytes) => {
+                    tracing::info!(level = ?round.level, bytes, "host memory pressure; trimming the guest");
+                    if let Err(e) = trim(shared, bytes) {
+                        tracing::warn!("trim on pressure: {e}");
                     }
                 }
                 Action::Balloon(target, why) => {
@@ -182,6 +184,23 @@ fn respond(shared: &Shared) {
             }
         }
     }
+}
+
+/// Asks the guest to reclaim `bytes` of its coldest memory, then compact
+/// so what it freed forms runs free page reporting hands back.
+fn trim(shared: &Shared, bytes: u64) -> Result<(), String> {
+    *shared
+        .last_reclaim
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+    for req in [AgentRequest::Trim { bytes }, AgentRequest::Compact] {
+        match ready::agent_call(&shared.vsock, &req, Duration::from_secs(30)) {
+            Ok(AgentResponse::Ok) => {}
+            Ok(other) => return Err(format!("{req:?}: {other:?}")),
+            Err(e) => return Err(format!("{req:?}: {e}")),
+        }
+    }
+    Ok(())
 }
 
 /// The guest's memory PSI `some` over the last 10 s, percent.

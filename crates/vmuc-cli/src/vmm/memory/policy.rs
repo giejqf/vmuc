@@ -5,14 +5,17 @@
 //! is unit-tested, including the failure modes it must never reproduce.
 //!
 //! The rules (plan.md, "Memory manager"):
-//! - warn or critical: ask the guest to drop caches and compact, at most
-//!   every [`RECLAIM_EVERY`];
+//! - warn or critical: at most every [`RECLAIM_EVERY`], ask the guest to
+//!   reclaim a share of its reclaimable memory (a quarter on warn, half
+//!   on critical) through its own LRU, coldest first, and compact;
 //! - critical, with `pressureBalloon`: inflate by at most a quarter of the
 //!   guest's available memory, never leaving less than `minAvailable`, at
 //!   most every [`BALLOON_EVERY`];
 //! - deflate fully once the host has been calm for
 //!   [`CALM_BEFORE_DEFLATE`], or at once when the guest stalls on memory
-//!   (PSI `some` over [`STALL_PERCENT`] in the last 10 s).
+//!   (PSI `some` over [`STALL_PERCENT`] in the last 10 s); after a stall,
+//!   inflate again only once the host has been calm, or the balloon and
+//!   the guest's stalls take turns (E1, the oscillation ArcBox saw).
 
 use std::time::{Duration, Instant};
 
@@ -23,6 +26,8 @@ pub const BALLOON_EVERY: Duration = Duration::from_secs(60);
 pub const CALM_BEFORE_DEFLATE: Duration = Duration::from_secs(120);
 /// Guest memory PSI `some` (avg10, percent) above which the balloon goes.
 pub const STALL_PERCENT: f32 = 10.0;
+/// Smaller trims are not worth a round trip.
+const MIN_TRIM: u64 = 16 << 20;
 
 /// What the responder saw this round.
 #[derive(Debug, Clone, Copy)]
@@ -35,6 +40,8 @@ pub struct Round {
     pub balloon: u64,
     /// The guest's available memory, when its stats have arrived.
     pub available: Option<u64>,
+    /// What of it the guest could reclaim (available minus free).
+    pub reclaimable: Option<u64>,
     /// Guest memory PSI `some` avg10; only fetched while the balloon
     /// holds memory.
     pub stall: Option<f32>,
@@ -42,8 +49,8 @@ pub struct Round {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Drop caches and compact.
-    Reclaim,
+    /// Reclaim this many bytes of the guest's coldest memory, and compact.
+    Trim(u64),
     /// Set the balloon target, in bytes.
     Balloon(u64, Why),
 }
@@ -61,6 +68,8 @@ pub struct Policy {
     min_available: u64,
     last_balloon: Option<Instant>,
     calm_since: Instant,
+    /// The guest stalled under the balloon during this bout of pressure.
+    stalled: bool,
 }
 
 impl Policy {
@@ -70,6 +79,7 @@ impl Policy {
             min_available,
             last_balloon: None,
             calm_since: now,
+            stalled: false,
         }
     }
 
@@ -77,22 +87,32 @@ impl Policy {
         let mut out = Vec::new();
         if r.balloon > 0 && r.stall.is_some_and(|s| s > STALL_PERCENT) {
             self.last_balloon = Some(r.now);
+            self.stalled = true;
             out.push(Action::Balloon(0, Why::Stalling));
             return out;
         }
         if r.level == PressureLevel::Normal {
+            self.stalled = false;
             if r.balloon > 0 && r.now.duration_since(self.calm_since) >= CALM_BEFORE_DEFLATE {
                 out.push(Action::Balloon(0, Why::Calm));
             }
             return out;
         }
         self.calm_since = r.now;
-        if r.last_reclaim
-            .is_none_or(|t| r.now.duration_since(t) >= RECLAIM_EVERY)
-        {
-            out.push(Action::Reclaim);
+        let share = if r.level == PressureLevel::Critical {
+            2
+        } else {
+            4
+        };
+        let trim = r.reclaimable.unwrap_or(0) / share;
+        let due = r
+            .last_reclaim
+            .is_none_or(|t| r.now.duration_since(t) >= RECLAIM_EVERY);
+        if due && trim >= MIN_TRIM {
+            out.push(Action::Trim(trim));
         }
         let may_balloon = self.pressure_balloon
+            && !self.stalled
             && r.level == PressureLevel::Critical
             && self
                 .last_balloon
