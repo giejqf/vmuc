@@ -160,16 +160,18 @@ fn a_rescan_recovers_what_was_dropped() {
     }
     let since = std::time::SystemTime::now();
     std::thread::sleep(std::time::Duration::from_millis(20));
-    fs::remove_file(s.root().join("d/gone")).unwrap();
-    fs::write(s.root().join("d/replaced.tmp"), "r2").unwrap();
-    fs::rename(s.root().join("d/replaced.tmp"), s.root().join("d/replaced")).unwrap();
-    fs::write(s.root().join("d/edited"), "e2").unwrap();
     fs::write(s.root().join("d/new"), "n").unwrap();
+    fs::write(s.root().join("d/replaced.tmp"), "r2").unwrap();
+    fs::write(s.root().join("d/edited"), "e2").unwrap();
     fs::create_dir(s.root().join("unseen")).unwrap();
     fs::write(s.root().join("unseen/f"), "f").unwrap();
     fs::create_dir(s.root().join("unread")).unwrap();
     s.look_up("unread");
     fs::write(s.root().join("unread/f"), "f").unwrap();
+    // Nothing is created after a file goes: Linux reuses an inode number
+    // at once, and a reused one looks known (APFS never reuses them).
+    fs::rename(s.root().join("d/replaced.tmp"), s.root().join("d/replaced")).unwrap();
+    fs::remove_file(s.root().join("d/gone")).unwrap();
     let rescan = |dir: &Path| {
         let mut c = rescan(s.root(), &s.fs.seen(), dir, since);
         c.sort_by(|a, b| a.path.cmp(&b.path));
