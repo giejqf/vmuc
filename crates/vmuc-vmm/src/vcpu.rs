@@ -90,7 +90,11 @@ impl Ctx<'_> {
     fn run_until_off(&mut self) -> Result<(), VmExit> {
         loop {
             // Before every entry, not only on a cancel: an exit for MMIO
-            // can come back instead of the cancel a pause asked for.
+            // can come back instead of the cancel a stop or a pause asked
+            // for, and the vCPU would go back to idling in the guest.
+            if self.m.stopping() {
+                return Err(VmExit::Stopped);
+            }
             if self.m.pause_requested() {
                 let state = self
                     .vcpu

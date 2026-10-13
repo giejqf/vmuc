@@ -368,6 +368,14 @@ impl Machine {
         self.exited.notify_all();
     }
 
+    /// Forces every vCPU out of the guest again (a stop's cancel can be
+    /// used up by an exit already on its way).
+    pub fn kick(&self) {
+        if let Err(e) = HvVcpu::force_exit(&self.handles(|_| true)) {
+            warn!("hv_vcpus_exit: {e}");
+        }
+    }
+
     pub fn stopping(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)
     }

@@ -509,6 +509,10 @@ impl Vm {
 impl Drop for Vm {
     fn drop(&mut self) {
         self.machine.request_exit(VmExit::Stopped);
+        while self.vcpu_threads.iter().any(|t| !t.is_finished()) {
+            self.machine.kick();
+            thread::sleep(Duration::from_millis(2));
+        }
         for t in self.vcpu_threads.drain(..) {
             let _ = t.join();
         }
