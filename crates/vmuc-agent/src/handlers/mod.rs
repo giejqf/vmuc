@@ -3,6 +3,7 @@
 //! they are unit-testable on any Linux box.
 
 mod exec;
+mod fs_events;
 mod mem;
 mod net;
 mod sockets;
@@ -10,6 +11,7 @@ mod time;
 mod tunnel;
 
 pub use exec::exec;
+pub use fs_events::fs_events;
 pub use mem::{compact, drop_caches, meminfo, psi};
 pub use net::addresses;
 pub use sockets::sockets_watch;

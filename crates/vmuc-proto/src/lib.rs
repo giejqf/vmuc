@@ -69,6 +69,9 @@ pub enum AgentRequest {
     /// Step the guest clock to the host's time when the drift exceeds
     /// `max_drift_ms`.
     TimeSync { unix_nanos: i64, max_drift_ms: u32 },
+    /// Changes the host made in the share mounted from `tag`, in order,
+    /// replayed as the inotify events a local change raises.
+    FsEvents { tag: String, events: Vec<FsEvent> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,9 +99,35 @@ pub enum AgentResponse {
         drift_ms: i64,
         adjusted: bool,
     },
+    FsEvents {
+        replayed: u32,
+        /// The guest kernel cannot replay (not vmuc's); nothing was.
+        unsupported: bool,
+    },
     Error {
         message: String,
     },
+}
+
+/// A change in a share; `path` is relative to the share's root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsEvent {
+    pub kind: FsEventKind,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsEventKind {
+    Created,
+    Removed,
+    /// Contents changed.
+    Modified,
+    /// Metadata only (mode, owner, times, extended attributes).
+    Attrib,
+    /// Renamed away; a `MovedTo` right after it is the other end.
+    MovedFrom,
+    MovedTo,
 }
 
 /// Bytes, from `/proc/meminfo` (kB there, bytes here).

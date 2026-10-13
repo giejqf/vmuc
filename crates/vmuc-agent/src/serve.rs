@@ -70,6 +70,9 @@ pub fn handle(mut conn: Box<dyn Conn>) -> io::Result<()> {
             &mut conn,
             &or_error(handlers::time_sync(unix_nanos, max_drift_ms)),
         ),
+        AgentRequest::FsEvents { tag, events } => {
+            write_frame(&mut conn, &or_error(handlers::fs_events(&tag, &events)))
+        }
         AgentRequest::SocketsWatch => handlers::sockets_watch(conn),
         AgentRequest::Tunnel { addr } => handlers::tunnel(conn, &addr),
     }
