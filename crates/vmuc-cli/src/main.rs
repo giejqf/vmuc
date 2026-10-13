@@ -186,8 +186,9 @@ enum Command {
     /// (`Ctrl-A x` quits).
     #[command(name = "_boot", hide = true)]
     Boot {
-        #[arg(long)]
-        kernel: PathBuf,
+        /// Needed unless restoring.
+        #[arg(long, required_unless_present = "restore")]
+        kernel: Option<PathBuf>,
         #[arg(long)]
         initrd: Option<PathBuf>,
         #[arg(
@@ -206,6 +207,21 @@ enum Command {
         /// Add a virtio-console (hvc0) and send the keyboard there.
         #[arg(long)]
         hvc: bool,
+        /// Add the balloon (free page reporting).
+        #[arg(long)]
+        balloon: bool,
+        /// Write a snapshot here after `--snapshot-after` seconds, then stop.
+        #[arg(long, requires = "snapshot_after")]
+        snapshot: Option<PathBuf>,
+        #[arg(long, requires = "snapshot")]
+        snapshot_after: Option<f64>,
+        /// Resume from a snapshot instead of booting; the other options
+        /// must describe the same machine.
+        #[arg(long)]
+        restore: Option<PathBuf>,
+        /// `copy` guest RAM in, or `map` it copy-on-write.
+        #[arg(long, default_value = "copy", value_parser = ["copy", "map"])]
+        restore_ram: String,
     },
     /// Run the VMM for one instance (spawned by `vmuc start`).
     #[command(name = "_vmm", hide = true)]
@@ -372,8 +388,18 @@ fn main() -> anyhow::Result<()> {
             memory,
             disk,
             hvc,
+            balloon,
+            snapshot,
+            snapshot_after,
+            restore,
+            restore_ram,
         } => {
             let memory: vmuc_config::ByteSize = memory.parse()?;
+            let ram = if restore_ram == "map" {
+                vmuc_vmm::snapshot::RamRestore::Map
+            } else {
+                vmuc_vmm::snapshot::RamRestore::Copy
+            };
             let exit = boot::run(&boot::BootArgs {
                 kernel,
                 initrd,
@@ -382,6 +408,9 @@ fn main() -> anyhow::Result<()> {
                 memory: memory.0,
                 disks: disk.iter().map(|d| boot::parse_disk(d)).collect(),
                 hvc,
+                balloon,
+                snapshot: snapshot.zip(snapshot_after.map(std::time::Duration::from_secs_f64)),
+                restore: restore.map(|dir| (dir, ram)),
             })?;
             eprintln!("vmuc: guest exited: {exit:?}");
             if let vmuc_vmm::VmExit::Crashed(_) = exit {

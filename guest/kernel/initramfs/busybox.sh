@@ -15,6 +15,13 @@
 #   reboot     print VMUC_INIT_OK and reboot (every boot)
 #   net        bring eth0 up as 10.0.2.15/24, ping 10.0.2.2, print
 #              VMUC_NET_OK or VMUC_NET_FAIL, power off
+#   tick       (snapshots) write `vmuc.fill=` MiB of random data to the
+#              initramfs, then print `VMUC_TICK n up=<uptime>` every
+#              100 ms; every tenth tick start a busy loop on every CPU and
+#              print `VMUC_CPUS` with each CPU's busy jiffies. At tick
+#              `vmuc.free=` delete the data (VMUC_FREED); at `vmuc.refill=`
+#              write it again and read 16 bytes of /dev/hwrng
+#              (VMUC_REFILLED); at `vmuc.free2=` delete that (VMUC_FREED2)
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -61,6 +68,28 @@ case "$test" in
         ip addr add 10.0.2.15/24 dev eth0
         if ping -c 3 -W 2 10.0.2.2; then echo VMUC_NET_OK; else echo VMUC_NET_FAIL; fi
         poweroff -f ;;
+    tick)
+        arg() { sed -n "s/.*vmuc\.$1=\([0-9]*\).*/\1/p" /proc/cmdline; }
+        fill=$(arg fill) free=$(arg free) refill=$(arg refill) free2=$(arg free2) i=0
+        [ -n "$fill" ] && dd if=/dev/urandom of=/fill bs=1M count="$fill" 2>/dev/null
+        echo "VMUC_FILLED ${fill:-0}"
+        while true; do
+            i=$((i + 1))
+            echo "VMUC_TICK $i up=$(cut -d' ' -f1 /proc/uptime)"
+            [ "$i" = "$free" ] && rm -f /fill && echo VMUC_FREED
+            if [ "$i" = "$refill" ]; then
+                dd if=/dev/urandom of=/fill2 bs=1M count="$fill" 2>/dev/null
+                echo "VMUC_REFILLED hwrng=$(head -c 16 /dev/hwrng | wc -c)"
+            fi
+            [ "$i" = "$free2" ] && rm -f /fill2 && echo VMUC_FREED2
+            if [ $((i % 10)) = 0 ]; then
+                for c in $(seq 2 "$(grep -c ^processor /proc/cpuinfo)"); do
+                    (j=0; while [ $j -lt 2000 ]; do j=$((j + 1)); done) &
+                done
+                echo "VMUC_CPUS $(awk '/^cpu[0-9]/ {printf "%d ", $2 + $4}' /proc/stat)"
+            fi
+            sleep 0.1
+        done ;;
 esac
 echo "busybox shell; 'poweroff -f' powers off, Ctrl-A x quits vmuc"
 # A session leader opening the console tty gets it as controlling

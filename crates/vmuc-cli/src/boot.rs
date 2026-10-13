@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use vmuc_virtio::devices::blk::{Block, BlockConfig};
@@ -13,12 +13,14 @@ use vmuc_virtio::devices::console::{Console, ConsoleInput};
 use vmuc_virtio::devices::rng::Rng;
 use vmuc_vmm::devices::pl011::Pl011;
 use vmuc_vmm::machine::Machine;
+use vmuc_vmm::snapshot::RamRestore;
 use vmuc_vmm::{ConsoleOut, VmBuilder, VmConfig, VmExit};
 
 use crate::terminal::{RawMode, pump_stdin};
 
 pub struct BootArgs {
-    pub kernel: PathBuf,
+    /// `None` only when restoring.
+    pub kernel: Option<PathBuf>,
     pub initrd: Option<PathBuf>,
     pub cmdline: String,
     pub cpus: u32,
@@ -27,6 +29,12 @@ pub struct BootArgs {
     pub disks: Vec<(PathBuf, bool)>,
     /// Add a virtio-console and send the keyboard there instead of the UART.
     pub hvc: bool,
+    /// Add the balloon, for free page reporting.
+    pub balloon: bool,
+    /// Write a snapshot to this directory after this long, then stop.
+    pub snapshot: Option<(PathBuf, Duration)>,
+    /// Resume from this snapshot instead of booting.
+    pub restore: Option<(PathBuf, RamRestore)>,
 }
 
 /// Where keyboard input goes.
@@ -68,6 +76,9 @@ fn add_devices(
         b.add_virtio(Box::new(Block::new(file, &cfg)?))?;
     }
     b.add_virtio(Box::new(Rng::new()?))?;
+    if args.balloon {
+        b.add_balloon()?;
+    }
     if !args.hvc {
         return Ok(None);
     }
@@ -80,7 +91,11 @@ fn add_devices(
 /// Boots until the guest powers off or the user quits; a guest reset
 /// boots a fresh VM in the same process. Returns the final exit.
 pub fn run(args: &BootArgs) -> anyhow::Result<VmExit> {
-    let kernel = std::fs::read(&args.kernel).with_context(|| args.kernel.display().to_string())?;
+    let kernel = args
+        .kernel
+        .as_ref()
+        .map(|k| std::fs::read(k).with_context(|| k.display().to_string()))
+        .transpose()?;
     let initrd = args
         .initrd
         .as_ref()
@@ -114,6 +129,7 @@ pub fn run(args: &BootArgs) -> anyhow::Result<VmExit> {
             })?;
     }
 
+    let mut restore = args.restore.clone();
     let exit = loop {
         let started = Instant::now();
         let mut builder = VmBuilder::new(VmConfig {
@@ -124,13 +140,37 @@ pub fn run(args: &BootArgs) -> anyhow::Result<VmExit> {
         })?;
         let uart = builder.add_platform_devices(out.clone())?;
         let hvc = add_devices(&mut builder, args, &out)?;
-        let vm = builder.boot(&kernel, initrd.as_deref())?;
+        let vm = match (restore.take(), &kernel) {
+            (Some((dir, ram)), _) => {
+                let vm = builder.restore(&dir, ram)?;
+                eprintln!("vmuc: restored in {:?}\r", started.elapsed());
+                vm
+            }
+            (None, Some(kernel)) => builder.boot(kernel, initrd.as_deref())?,
+            (None, None) => anyhow::bail!("the restored guest reset; give --kernel to reboot it"),
+        };
         tracing::info!(setup = ?started.elapsed(), "VM started");
         *target.lock().unwrap_or_else(PoisonError::into_inner) = Target {
             keyboard: Some(hvc.map_or(Keyboard::Uart(uart), Keyboard::Hvc)),
             machine: Some(Arc::clone(vm.machine())),
         };
-        let exit = vm.wait();
+        let snapshot_now = args
+            .snapshot
+            .as_ref()
+            .filter(|(_, after)| vm.machine().wait_exit_timeout(*after).is_none());
+        let exit = if let Some((dir, _)) = snapshot_now {
+            let st = vm.snapshot(dir)?;
+            eprintln!(
+                "\r\nvmuc: snapshot in {:?}: vCPUs stopped in {:?}, {} MiB of RAM written\r",
+                st.total,
+                st.pause,
+                st.ram_bytes >> 20
+            );
+            drop(vm);
+            VmExit::Stopped
+        } else {
+            vm.wait()
+        };
         *target.lock().unwrap_or_else(PoisonError::into_inner) = Target::default();
         if exit != VmExit::Reset {
             break exit;
