@@ -28,3 +28,8 @@ not installed on the benchmark Mac).
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | c107432 | virtiofs | 3171 | 3811 | 1286 | 29 | 1002 | 603 | 77.7 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | c107432 | guest virtio-blk ext4 | 2795 | 11512 | 35 | 13 | 168 | 18 | 0.7 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | c107432 | host APFS (cache warm) | 5372 | 21622 | 321 | 14 | 94 | 256 | 9.9 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ea89cec | virtiofs | 3007 | 3810 | 1284 | 30 | 1002 | 571 | 73.9 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ea89cec | guest virtio-blk ext4 | 2769 | 12271 | 34 | 12 | 176 | 18 | 0.7 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ea89cec | host APFS (cache warm) | 5670 | 21543 | 284 | 13 | 93 | 185 | 9.7 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | ea89cec | virtiofs DAX | 3583 | 6733 | 1252 | 31 | 1115 | 656 | 75.0 |
+| 2026-10-13 | Apple M4 Pro, macOS 26.6.2 | 7d82ef4 | virtiofs DAX | 3606 | 5802 | 1315 | 31 | 1153 | 734 | 75.8 |

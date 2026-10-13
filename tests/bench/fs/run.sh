@@ -7,6 +7,7 @@
 # created, stat'ed cold, read cold and unlinked, open+close latency).
 #
 #   tests/bench/fs/run.sh
+#   FS_DAX=1 tests/bench/fs/run.sh     the share with virtiofs DAX (one row)
 #
 # Builds a throwaway instance (temp VMUC_HOME, shared image cache) with a
 # writable share of a host directory under target/, runs the workload on
@@ -28,7 +29,12 @@ cleanup() {
 }
 trap cleanup EXIT
 export VMUC_HOME=$home
-"$vmuc" create ubuntu --name fsb --cpus 4 --memory 4GiB --mount "$share:w" >/dev/null
+if [[ ${FS_DAX:-0} == 1 ]]; then
+    "$vmuc" create ubuntu --name fsb --cpus 4 --memory 4GiB \
+        --set "mounts=[{location: $share, writable: true, dax: true}]" >/dev/null
+else
+    "$vmuc" create ubuntu --name fsb --cpus 4 --memory 4GiB --mount "$share:w" >/dev/null
+fi
 "$vmuc" start fsb --timeout 300 >/dev/null
 # First boot: wait for cloud-init (snap seeding) so it does not compete.
 "$vmuc" shell fsb -- 'for i in $(seq 180); do test -e /run/vmuc-boot-done && break; sleep 1; done' \
@@ -36,18 +42,25 @@ export VMUC_HOME=$home
 
 workload=$root/tests/bench/fs/workload.py
 virtiofs=$("$vmuc" shell fsb -- sudo python3 - "$share/w" 1 <"$workload")
-blk=$("$vmuc" shell fsb -- sudo python3 - /var/tmp/vmuc-fs 1 <"$workload")
-host=$(python3 -I "$workload" "$share/h")
+if [[ ${FS_DAX:-0} == 1 ]]; then
+    blk='{}' host='{}'
+else
+    blk=$("$vmuc" shell fsb -- sudo python3 - /var/tmp/vmuc-fs 1 <"$workload")
+    host=$(python3 -I "$workload" "$share/h")
+fi
 
-python3 -I - "$root" "$virtiofs" "$blk" "$host" <<'PY'
+python3 -I - "$root" "${FS_DAX:-0}" "$virtiofs" "$blk" "$host" <<'PY'
 import datetime, json, subprocess, sys
-root, *results = sys.argv[1:]
+root, dax, *results = sys.argv[1:]
 mac = subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout.strip()
 chip = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()
 rev = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
 with open(f"{root}/docs/benchmarks/fs.md", "a") as f:
-    for what, r in zip(["virtiofs", "guest virtio-blk ext4", "host APFS (cache warm)"], results):
+    labels = ["virtiofs DAX" if dax == "1" else "virtiofs", "guest virtio-blk ext4", "host APFS (cache warm)"]
+    for what, r in zip(labels, results):
         r = json.loads(r.strip().splitlines()[-1])
+        if not r:
+            continue
         row = (f"| {datetime.date.today()} | {chip}, macOS {mac} | {rev} | {what} | {r['write_mbps']} | "
                f"{r['read_mbps']} | {r['create_ms']} | {r['stat_ms']} | {r['read_small_ms']} | {r['unlink_ms']} | "
                f"{r['open_close_us']} |")
