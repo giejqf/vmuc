@@ -189,6 +189,12 @@ calls `hv_*`.
   `F_PUNCHHOLE`); unix socket paths are limited to 104 bytes, so keep
   `~/.vmuc/<name>/` short and reject names that would overflow;
   `O_NOFOLLOW | O_NOFOLLOW_ANY` together is EINVAL.
+- APFS fills holes in: when it flushes a file, data written up to
+  16 MiB past the file's allocated end is joined to it by allocated
+  zeros (real space; the write order does not matter), while a hole
+  punched after the flush stays. A writer that leaves holes records them
+  and calls `SparseFileExt::settle_holes` once done
+  (docs/experiments/2026-10-13-e6-apfs-sparse-files.md).
 - Unix datagram sockets on macOS hold 4 KiB and cap a datagram at 2 KiB
   by default (size both ends explicitly), and a send into a full one
   fails with ENOBUFS instead of waiting. A blocked `recv` never learns
@@ -201,7 +207,10 @@ calls `hv_*`.
 - Tests are expected for every code change that has branching logic.
   Don't test the language or a dependency.
 - Device models are tested against byte buffers on Linux.
-- `tests/e2e` boots real VMs and runs only on the Mac.
+- `tests/e2e` boots real VMs and runs only on the Mac. A test that
+  creates an instance holds `vmuc_e2e::cli::Cleanup` for it, declared
+  after its temporary home: a failed test otherwise leaves the VM (and
+  its vmnet helper) running behind a deleted home.
 - A number without a checked-in probe is not a result.
 
 ## Documentation discipline
@@ -271,5 +280,3 @@ calls `hv_*`.
 - GitHub-hosted macOS runners cannot run HV. End-to-end CI runs on a
   self-hosted Apple silicon runner; unit tests and builds run on
   `macos-15` and `macos-26`.
-- Test on both macOS 15 and 26 before a release; the GIC API surface
-  moved between SDKs.
