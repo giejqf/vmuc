@@ -420,13 +420,12 @@ Total: roughly 18–24 engineer-weeks to v0.1.0.
   the guest then writes, and reclaim needs no exception for it (unlike
   mvm). Prototype in `vmuc _boot`; instances suspend and resume with it
   (ADR 0007).
-- E6 APFS sparse accounting: the macOS CI runners report full
-  allocation (`st_blocks`) for files written with seek-over-zero holes,
-  while Linux reports only the data. Measure on a real Mac whether APFS
-  really allocates, or only accounts differently, and whether
-  `F_PUNCHHOLE` after the fact changes it; disk images and decompressed
-  images depend on the answer. The three allocation assertions in
-  vmuc-image tests are Linux-only until then.
+- E6 APFS sparse accounting: done 2026-10-13
+  (`docs/experiments/2026-10-13-e6-apfs-sparse-files.md`); APFS really
+  allocates holes of up to 16 MiB past a file's allocated end when it
+  flushes, and keeps holes punched afterwards, so every writer that
+  leaves holes punches them once flushed; the allocation assertions run
+  on macOS too.
 
 ## Development workflow
 
