@@ -171,7 +171,11 @@ fn boot_and_wait(
     let agent = assets::agent()?;
     let fs_shares = shares::open(&resolved, &events);
     let mounts: Vec<_> = fs_shares.iter().map(|s| s.mount.clone()).collect();
-    let watched = fs_shares.iter().map(shares::Share::watched).collect();
+    let watched = fs_shares
+        .iter()
+        .filter(|s| s.mount.writable)
+        .map(shares::Share::watched)
+        .collect();
     let boot_id = instance::write_seed(home, inst, &resolved, Some(&agent), &mounts)?;
     events.push(EventKind::Booting {
         boot_id: boot_id.clone(),
