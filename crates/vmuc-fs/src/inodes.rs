@@ -45,6 +45,15 @@ impl Inodes {
         self.by_key.contains_key(&key)
     }
 
+    /// Every node at or under `rel`, as its path and key.
+    pub fn under(&self, rel: &Path) -> Vec<(PathBuf, (u64, u64))> {
+        self.by_id
+            .values()
+            .filter(|n| n.rel.starts_with(rel))
+            .map(|n| (n.rel.clone(), n.key))
+            .collect()
+    }
+
     /// The node for a file just looked up, counting one more lookup. A
     /// known file (another hard link, or the same name again) keeps its ID
     /// and takes the most recent path.

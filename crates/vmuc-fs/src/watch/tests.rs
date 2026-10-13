@@ -150,6 +150,53 @@ fn adjacent_renames_are_a_move_and_lone_ones_are_not() {
     );
 }
 
+#[test]
+fn a_rescan_recovers_what_was_dropped() {
+    let s = Share::new();
+    fs::create_dir(s.root().join("d")).unwrap();
+    for f in ["gone", "replaced", "edited", "same"] {
+        fs::write(s.root().join("d").join(f), f).unwrap();
+        s.look_up(&format!("d/{f}"));
+    }
+    let since = std::time::SystemTime::now();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::remove_file(s.root().join("d/gone")).unwrap();
+    fs::write(s.root().join("d/replaced.tmp"), "r2").unwrap();
+    fs::rename(s.root().join("d/replaced.tmp"), s.root().join("d/replaced")).unwrap();
+    fs::write(s.root().join("d/edited"), "e2").unwrap();
+    fs::write(s.root().join("d/new"), "n").unwrap();
+    fs::create_dir(s.root().join("unseen")).unwrap();
+    fs::write(s.root().join("unseen/f"), "f").unwrap();
+    fs::create_dir(s.root().join("unread")).unwrap();
+    s.look_up("unread");
+    fs::write(s.root().join("unread/f"), "f").unwrap();
+    let rescan = |dir: &Path| {
+        let mut c = rescan(s.root(), &s.fs.seen(), dir, since);
+        c.sort_by(|a, b| a.path.cmp(&b.path));
+        c
+    };
+    assert_eq!(
+        rescan(&s.root().join("d")),
+        [
+            ch(ChangeKind::Modified, "d/edited"),
+            ch(ChangeKind::Removed, "d/gone"),
+            ch(ChangeKind::Created, "d/new"),
+            ch(ChangeKind::Created, "d/replaced"),
+        ]
+    );
+    let whole = rescan(s.root().parent().unwrap());
+    assert!(
+        whole.contains(&ch(ChangeKind::Created, "unseen")),
+        "{whole:?}"
+    );
+    assert!(!whole.iter().any(|c| c.path == "unseen/f"), "{whole:?}");
+    assert!(
+        !whole.iter().any(|c| c.path == "unread/f"),
+        "listed a directory the guest never looked inside: {whole:?}"
+    );
+    assert_eq!(rescan(Path::new("/elsewhere")), []);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn fsevents_reports_other_processes_and_not_this_one() {

@@ -89,6 +89,14 @@ impl Seen {
             .unwrap_or_else(PoisonError::into_inner)
             .contains_key(key)
     }
+
+    /// What the guest knows at or under `rel`: paths and keys.
+    pub fn under(&self, rel: &Path) -> Vec<(PathBuf, (u64, u64))> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .under(rel)
+    }
 }
 
 #[derive(Debug)]

@@ -14,6 +14,7 @@
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::passthrough::Seen;
 
@@ -138,6 +139,68 @@ fn pair_moves(changes: &mut [Change]) {
         };
         i += 1;
     }
+}
+
+/// The changes FSEvents dropped under `dir` (it said MustScanSubDirs),
+/// recovered by checking what the guest knows there against the disk: a
+/// known entry that is gone was removed, one replaced by another file was
+/// created, a known file modified since `since` was modified, and an
+/// entry the guest does not know was created, in a directory the guest
+/// has looked inside (one with a known entry: nothing here opens a
+/// directory the guest has not, such as a privacy-protected folder whose
+/// first read waits for the user). It reads the host filesystem and can
+/// block; run it where blocking holds nothing up.
+pub fn rescan(root: &Path, seen: &Seen, dir: &Path, since: SystemTime) -> Vec<Change> {
+    let rel_dir = match dir.strip_prefix(root) {
+        Ok(rel) => rel,
+        // The drop was reported for a directory holding the whole share.
+        Err(_) if root.starts_with(dir) => Path::new(""),
+        Err(_) => return Vec::new(),
+    };
+    let mut known = seen.under(rel_dir);
+    known.sort_by_key(|(rel, _)| rel.components().count());
+    let read: HashSet<PathBuf> = known
+        .iter()
+        .filter_map(|(rel, _)| Some(rel.parent()?.to_path_buf()))
+        .collect();
+    let mut out = Vec::new();
+    let mut dup = HashSet::new();
+    let mut push = |kind, rel: &Path| {
+        if let Some(path) = rel.to_str().filter(|p| !p.is_empty()) {
+            let change = Change {
+                kind,
+                path: path.to_owned(),
+            };
+            if dup.insert(change.clone()) {
+                out.push(change);
+            }
+        }
+    };
+    for (rel, key) in known {
+        let Ok(m) = std::fs::symlink_metadata(root.join(&rel)) else {
+            push(ChangeKind::Removed, &rel);
+            continue;
+        };
+        if (m.dev(), m.ino()) != key {
+            push(ChangeKind::Created, &rel);
+        } else if m.is_dir() {
+            if !read.contains(&rel) {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(root.join(&rel)) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let new = e.metadata().is_ok_and(|m| !seen.knows((m.dev(), m.ino())));
+                if new {
+                    push(ChangeKind::Created, &rel.join(e.file_name()));
+                }
+            }
+        } else if m.modified().is_ok_and(|t| t >= since) {
+            push(ChangeKind::Modified, &rel);
+        }
+    }
+    out
 }
 
 fn key(p: &Path) -> Option<(u64, u64)> {
