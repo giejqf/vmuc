@@ -1881,6 +1881,7 @@ dependencies = [
  "tracing",
  "vm-fdt",
  "vmuc-hv",
+ "vmuc-image",
  "vmuc-virtio",
 ]
 

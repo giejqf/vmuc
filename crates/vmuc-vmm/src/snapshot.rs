@@ -25,6 +25,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use vmuc_hv::{HOST_PAGE_SIZE, VcpuState};
+use vmuc_image::sparse::{SparseFileExt, add_hole};
 use vmuc_virtio::TransportState;
 
 use crate::machine::CpuSnapshot;
@@ -199,10 +200,16 @@ unsafe fn write_ram_to(
     file.set_len(len as u64)?;
     let mut written = 0u64;
     let mut run: Option<usize> = None;
-    let flush = |start: usize, end: usize, written: &mut u64| -> io::Result<()> {
+    // What is not written, for APFS to leave unallocated (it fills short
+    // holes in when it flushes; see vmuc_image::sparse).
+    let mut holes = Vec::new();
+    let mut data_end = 0u64;
+    let mut flush = |start: usize, end: usize, written: &mut u64| -> io::Result<()> {
         // SAFETY: inside the caller's readable range.
         let bytes = unsafe { std::slice::from_raw_parts(host.add(start), end - start) };
         file.write_all_at(bytes, start as u64)?;
+        add_hole(&mut holes, data_end..start as u64);
+        data_end = end as u64;
         *written += (end - start) as u64;
         Ok(())
     };
@@ -251,6 +258,8 @@ unsafe fn write_ram_to(
     if let Some(start) = run {
         flush(start, len, &mut written)?;
     }
+    add_hole(&mut holes, data_end..len as u64);
+    file.settle_holes(&holes)?;
     Ok(written)
 }
 

@@ -26,3 +26,7 @@ path = "../vmuc-hv"
 
 [dependencies.vmuc-virtio]
 path = "../vmuc-virtio"
+
+[dependencies.vmuc-image]
+path = "../vmuc-image"
+default-features = false

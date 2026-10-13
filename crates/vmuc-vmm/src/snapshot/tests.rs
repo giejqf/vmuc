@@ -39,6 +39,9 @@ fn only_pages_with_data_are_written_and_both_ways_back_agree() {
     let written = unsafe { write_ram(src, LEN, &image, &[]) }.unwrap();
     assert_eq!(written, 4 * PAGE as u64, "pages 0, 5-6 and 100");
     assert_eq!(std::fs::metadata(&image).unwrap().len(), LEN as u64);
+    // Holes stay holes, also where APFS would fill short ones in.
+    let allocated = vmuc_image::allocated_bytes(&image).unwrap();
+    assert!(allocated <= written, "{allocated} allocated");
 
     let copy = vmuc_hv::guest_memory::allocate(LEN).unwrap();
     // SAFETY: a fresh allocation of LEN bytes.
