@@ -14,8 +14,10 @@ use std::path::{Component, Path};
 
 use vmuc_proto::{AgentResponse, FsEvent, FsEventKind};
 
-/// `_IOWR(229, 0x76, struct fuse_vmuc_replay)`.
-const IOC_REPLAY: u32 = (3 << 30) | ((size_of::<Replay>() as u32) << 16) | (229 << 8) | 0x76;
+/// `_IOWR(229, 0x76, struct fuse_vmuc_replay)`, in the C library's
+/// request type (`unsigned long` in glibc, `int` in musl).
+const IOC_REPLAY: libc::Ioctl =
+    (3 << 30) | ((size_of::<Replay>() as libc::Ioctl) << 16) | (229 << 8) | 0x76;
 
 /// `struct fuse_vmuc_replay`.
 #[repr(C)]
@@ -100,7 +102,7 @@ fn replay(dir: &OwnedFd, mask: u32, name: &OsStr, cookie: u32) -> io::Result<u32
     };
     // SAFETY: `r` and the name it points to outlive the call; the kernel
     // reads namelen bytes and writes back only `cookie`.
-    let rc = unsafe { libc::ioctl(dir.as_raw_fd(), IOC_REPLAY as _, &raw mut r) };
+    let rc = unsafe { libc::ioctl(dir.as_raw_fd(), IOC_REPLAY, &raw mut r) };
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -198,7 +200,7 @@ mod tests {
     #[test]
     fn the_ioctl_matches_the_kernel_patch() {
         assert_eq!(size_of::<Replay>(), 24);
-        assert_eq!(IOC_REPLAY, 0xC018_E576);
+        assert_eq!(IOC_REPLAY as u32, 0xC018_E576);
     }
 
     #[test]
