@@ -35,7 +35,7 @@ use vmuc_virtio::devices::vsock::{GUEST_CID, Vsock, VsockConnector};
 use vmuc_vmm::loader::MappedFile;
 use vmuc_vmm::machine::Machine;
 use vmuc_vmm::memory::ReclaimStats;
-use vmuc_vmm::{ConsoleOut, VmBuilder, VmConfig, VmExit};
+use vmuc_vmm::{ConsoleOut, Vm, VmBuilder, VmConfig, VmExit};
 
 use crate::assets;
 use crate::instance::{self, Instance};
@@ -167,7 +167,6 @@ fn boot_and_wait(
 ) -> anyhow::Result<VmExit> {
     let resolved = inst.resolved(home)?;
     let events = EventLog::create(&inst.dir)?;
-    let kernel_path = assets::kernel()?;
     let agent = assets::agent()?;
     let fs_shares = shares::open(&resolved, &events);
     let mounts: Vec<_> = fs_shares.iter().map(|s| s.mount.clone()).collect();
@@ -196,6 +195,60 @@ fn boot_and_wait(
         cmdline: info.cmdline.clone(),
         dax_windows: fs_shares.iter().filter(|s| s.mount.dax).count() as u32,
     })?;
+    let devices = add_devices(&mut b, inst, &resolved, &events, &out)?;
+    // After the NIC, so its slot does not depend on the mounts.
+    shares::attach(&mut b, fs_shares)?;
+    let vm = start_vm(b)?;
+    release_freed_heap();
+
+    let shared = Arc::new(Shared {
+        name: inst.name.clone(),
+        boot_id,
+        cpus: info.cpus,
+        memory: info.memory_bytes,
+        started: Instant::now(),
+        machine: Arc::clone(vm.machine()),
+        vsock: devices.vsock,
+        phase: Mutex::new(Phase::Booting),
+        errors: Mutex::new(Vec::new()),
+        events,
+        balloon: devices.balloon,
+        reclaim: devices.reclaim,
+        last_reclaim: Mutex::new(None),
+        simulated: Mutex::new(None),
+        forwards: Mutex::new(Vec::new()),
+        addrs: Mutex::new(Vec::new()),
+        net: devices.net,
+    });
+    server::spawn(&inst.dir, Arc::clone(&shared))?;
+    ready::spawn(Arc::clone(&shared));
+    memory::spawn_responder(Arc::clone(&shared));
+    forward::spawn(Arc::clone(&shared), resolved.port_forwards.clone())?;
+    watch::spawn(Arc::clone(&shared), watched)?;
+    signals::spawn(signals, Arc::clone(&shared))?;
+
+    let exit = serve(vm, &shared);
+    out.close();
+    let _ = writer.join();
+    Ok(exit)
+}
+
+/// What the control server and friends hold of the devices.
+struct Devices {
+    vsock: VsockConnector,
+    balloon: BalloonHandle,
+    reclaim: Arc<ReclaimStats>,
+    net: Option<Arc<vmuc_virtio::devices::net::NetCounters>>,
+}
+
+/// Every device but the shares.
+fn add_devices(
+    b: &mut VmBuilder,
+    inst: &Instance,
+    resolved: &vmuc_config::ResolvedConfig,
+    events: &EventLog,
+    out: &ConsoleOut,
+) -> anyhow::Result<Devices> {
     b.add_platform_devices(out.clone())?;
     let disk = OpenOptions::new()
         .read(true)
@@ -224,47 +277,29 @@ fn boot_and_wait(
     b.add_virtio(Box::new(Rng::new()?))?;
     let (balloon, reclaim) = b.add_balloon()?;
     // Last, so disks keep their names: the NIC, when the helper starts.
-    let net = network::attach(&mut b, &resolved, &events);
-    // After the NIC, so its slot does not depend on the mounts.
-    shares::attach(&mut b, fs_shares)?;
+    let net = network::attach(b, resolved, events);
+    Ok(Devices {
+        vsock: connector,
+        balloon,
+        reclaim,
+        net,
+    })
+}
+
+/// Boots the guest.
+fn start_vm(b: VmBuilder) -> anyhow::Result<Vm> {
+    let kernel_path = assets::kernel()?;
     // Mapped, not read: a heap copy would stay billed for the VM's life.
     let kernel =
         MappedFile::open(&kernel_path).with_context(|| kernel_path.display().to_string())?;
-    let vm = b.boot(&kernel, None)?;
-    drop(kernel);
-    release_freed_heap();
+    Ok(b.boot(&kernel, None)?)
+}
 
-    let shared = Arc::new(Shared {
-        name: inst.name.clone(),
-        boot_id,
-        cpus: info.cpus,
-        memory: info.memory_bytes,
-        started: Instant::now(),
-        machine: Arc::clone(vm.machine()),
-        vsock: connector,
-        phase: Mutex::new(Phase::Booting),
-        errors: Mutex::new(Vec::new()),
-        events,
-        balloon,
-        reclaim,
-        last_reclaim: Mutex::new(None),
-        simulated: Mutex::new(None),
-        forwards: Mutex::new(Vec::new()),
-        addrs: Mutex::new(Vec::new()),
-        net,
-    });
-    server::spawn(&inst.dir, Arc::clone(&shared))?;
-    ready::spawn(Arc::clone(&shared));
-    memory::spawn_responder(Arc::clone(&shared));
-    forward::spawn(Arc::clone(&shared), resolved.port_forwards.clone())?;
-    watch::spawn(Arc::clone(&shared), watched)?;
-    signals::spawn(signals, Arc::clone(&shared))?;
-
+/// The main thread from here: owns the VM until it exits.
+fn serve(vm: Vm, shared: &Shared) -> VmExit {
     let exit = vm.wait();
     shared.events.push(EventKind::Exiting {
         reason: format!("{exit:?}"),
     });
-    out.close();
-    let _ = writer.join();
-    Ok(exit)
+    exit
 }
