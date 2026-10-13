@@ -57,6 +57,32 @@ pub mod status {
     pub const FAILED: u32 = 128;
 }
 
+/// What the driver set up in a transport, for snapshots. The device's
+/// own state, if any, is the device's to save.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransportState {
+    pub device_type: u32,
+    pub status: u32,
+    pub driver_features: u64,
+    pub device_features_sel: u32,
+    pub driver_features_sel: u32,
+    pub queue_sel: u32,
+    pub queues: Vec<QueueSetup>,
+    pub config_generation: u32,
+    pub shm_sel: u32,
+    pub interrupt_status: u32,
+}
+
+/// One queue as the driver configured it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct QueueSetup {
+    pub size: u16,
+    pub ready: bool,
+    pub desc: u64,
+    pub avail: u64,
+    pub used: u64,
+}
+
 struct State {
     device: Box<dyn VirtioDevice>,
     status: u32,
@@ -121,6 +147,71 @@ impl MmioTransport {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The registers and queue setup, for a snapshot of a paused VM.
+    pub fn save(&self) -> TransportState {
+        let s = self.lock();
+        TransportState {
+            device_type: s.device.device_type(),
+            status: s.status,
+            driver_features: s.driver_features,
+            device_features_sel: s.device_features_sel,
+            driver_features_sel: s.driver_features_sel,
+            queue_sel: s.queue_sel,
+            queues: s
+                .queues
+                .iter()
+                .map(|q| QueueSetup {
+                    size: q.size,
+                    ready: q.ready,
+                    desc: q.desc,
+                    avail: q.avail,
+                    used: q.used,
+                })
+                .collect(),
+            config_generation: s.config_generation,
+            shm_sel: s.shm_sel,
+            interrupt_status: self.irq.status(),
+        }
+    }
+
+    /// Puts a saved setup back, before any vCPU runs. A device the driver
+    /// had finished setting up is activated with each queue picking up
+    /// where its used ring in (restored) guest memory left off.
+    pub fn restore(&self, st: &TransportState) -> Result<(), String> {
+        let mut s = self.lock();
+        if st.device_type != s.device.device_type() || st.queues.len() != s.queues.len() {
+            return Err(format!(
+                "snapshot has device type {} with {} queues here, not {} with {}",
+                st.device_type,
+                st.queues.len(),
+                s.device.device_type(),
+                s.queues.len()
+            ));
+        }
+        s.status = st.status;
+        s.driver_features = st.driver_features;
+        s.device_features_sel = st.device_features_sel;
+        s.driver_features_sel = st.driver_features_sel;
+        s.queue_sel = st.queue_sel;
+        s.config_generation = st.config_generation;
+        s.shm_sel = st.shm_sel;
+        for (q, c) in s.queues.iter_mut().zip(&st.queues) {
+            q.size = c.size;
+            q.ready = c.ready;
+            q.desc = c.desc;
+            q.avail = c.avail;
+            q.used = c.used;
+            if q.ready && q.is_valid() {
+                q.resume(&self.mem).map_err(|e| e.to_string())?;
+            }
+        }
+        if st.status & status::DRIVER_OK != 0 && st.status & status::FEATURES_OK != 0 {
+            self.activate(&mut s);
+        }
+        self.irq.restore(st.interrupt_status);
+        Ok(())
     }
 
     /// Stops the device for good (VM teardown): its workers stop touching
@@ -308,6 +399,7 @@ mod tests {
         resets: Arc<AtomicU32>,
         doorbell: Arc<ParkDoorbell>,
         shm: Vec<ShmRegion>,
+        queues: Arc<Mutex<Vec<Queue>>>,
     }
 
     impl VirtioDevice for Probe {
@@ -326,6 +418,7 @@ mod tests {
         fn activate(&mut self, act: Activation) -> Result<(), String> {
             assert!(act.queues[0].event_idx);
             self.activated.fetch_add(1, Ordering::SeqCst);
+            *self.queues.lock().unwrap() = act.queues;
             Ok(())
         }
         fn reset(&mut self) {
@@ -381,6 +474,40 @@ mod tests {
             STATUS,
             status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK | status::DRIVER_OK,
         );
+    }
+
+    #[test]
+    fn a_restored_transport_takes_up_the_used_ring_where_it_was() {
+        let mem = GuestMemory::from_vec(0, vec![0; 0x2000]);
+        let probe = || {
+            let p = Probe::default();
+            let (a, q) = (p.activated.clone(), p.queues.clone());
+            let irq = Arc::new(IrqStatus::new(Arc::new(TestIrq::default())));
+            (MmioTransport::new(Box::new(p), mem.clone(), irq), a, q)
+        };
+        let (t, _, _) = probe();
+        bring_up(&t, features::VERSION_1 | features::RING_EVENT_IDX);
+        // Five chains returned; the sixth (head 9) taken and not returned.
+        mem.store_u16_release(0x1a02, 5).unwrap();
+        mem.store_u16_release(0x1802, 6).unwrap();
+        mem.write_obj(0x1800 + 4 + 2 * 5, 9u16).unwrap();
+        mem.write_obj(0x1000 + 16 * 9, 0x100u64).unwrap();
+        mem.write_obj(0x1000 + 16 * 9 + 8, 4u32).unwrap();
+        t.irq.signal_used();
+        let saved = t.save();
+
+        let (fresh, activated, queues) = probe();
+        fresh.restore(&saved).unwrap();
+        assert_eq!(activated.load(Ordering::SeqCst), 1);
+        assert_eq!(fresh.save(), saved);
+        assert_eq!(rd(&fresh, INTERRUPT_STATUS), saved.interrupt_status);
+        let chain = queues.lock().unwrap()[0].pop(&mem).unwrap().unwrap();
+        assert_eq!(chain.head, 9, "the taken chain is taken again");
+
+        let (other, _, _) = transport();
+        let mut wrong = saved.clone();
+        wrong.device_type = 2;
+        assert!(other.restore(&wrong).is_err());
     }
 
     #[test]

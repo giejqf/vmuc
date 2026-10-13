@@ -19,5 +19,5 @@ pub use bus::BusDevice;
 pub use device::{Activation, Doorbell, IrqStatus, ShmRegion, VirtioDevice};
 pub use irq::{Interrupt, TestIrq};
 pub use mem::{Gpa, GuestMemory, MemError, MemResult, Pod};
-pub use mmio::MmioTransport;
+pub use mmio::{MmioTransport, QueueSetup, TransportState};
 pub use queue::{Desc, DescChain, Queue, QueueError};

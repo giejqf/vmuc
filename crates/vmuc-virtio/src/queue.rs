@@ -112,6 +112,19 @@ impl Queue {
         *self = Self::new(self.max_size);
     }
 
+    /// Picks up where the used ring in guest memory left off, for a
+    /// restored VM: whatever the device had taken and not returned is
+    /// taken again. Right when it returned chains in the order it took
+    /// them (keeping at most the last ones, as a balloon keeps its stats
+    /// buffer); a device that completes out of order must drain first.
+    pub fn resume(&mut self, mem: &GuestMemory) -> Result<(), QueueError> {
+        let used = mem.load_u16_acquire(self.used + 2)?;
+        self.next_avail = used;
+        self.next_used = used;
+        self.signalled_used = used;
+        Ok(())
+    }
+
     fn avail_ring(&self, slot: u16) -> Gpa {
         self.avail + 4 + 2 * u64::from(slot % self.size)
     }

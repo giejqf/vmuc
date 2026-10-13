@@ -1858,6 +1858,7 @@ version = "0.1.0-dev"
 dependencies = [
  "libc",
  "mio",
+ "serde",
  "tempfile",
  "thiserror",
  "tracing",
@@ -1871,6 +1872,8 @@ name = "vmuc-vmm"
 version = "0.1.0-dev"
 dependencies = [
  "libc",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tracing",

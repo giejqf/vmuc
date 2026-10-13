@@ -87,6 +87,12 @@ impl IrqStatus {
         }
     }
 
+    /// Status bits saved in a snapshot, line level to match.
+    pub fn restore(&self, bits: u32) {
+        *self.lock() = bits;
+        self.line.set_level(bits != 0);
+    }
+
     pub fn ack(&self, bits: u32) {
         let mut s = self.lock();
         let was = *s;
