@@ -197,6 +197,12 @@ calls `hv_*`.
   punched after the flush stays. A writer that leaves holes records them
   and calls `SparseFileExt::settle_holes` once done
   (docs/experiments/2026-10-13-e6-apfs-sparse-files.md).
+- On an M4 an SMSTOP slows the core by about 40 % for some 20 µs even
+  when PSTATE.SM and PSTATE.ZA are already clear, on the host and in the
+  guest alike. Nothing on a hot path issues one without reading SVCR
+  first; the guest kernel does so through patch 0003, which a kernel
+  bump keeps until upstream checks SVCR itself (ADR 0008,
+  docs/experiments/2026-10-14-guest-crypto-and-smstop.md).
 - Unix datagram sockets on macOS hold 4 KiB and cap a datagram at 2 KiB
   by default (size both ends explicitly), and a send into a full one
   fails with ENOBUFS instead of waiting. A blocked `recv` never learns
