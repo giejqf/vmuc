@@ -219,6 +219,13 @@ fn boot_and_wait(
         info.cmdline.push(' ');
         info.cmdline.push_str(&extra.to_string_lossy());
     }
+    // A duplicate's guest takes its own machine ID (ADR 0009).
+    if resume.is_none()
+        && let Some(id) = crate::duplicate::machine_id_param(&inst.dir)
+    {
+        info.cmdline.push(' ');
+        info.cmdline.push_str(&id);
+    }
 
     // A resumed guest's console carries on in the same log.
     let log = File::options()

@@ -90,6 +90,12 @@ pub fn new_boot_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// A fresh random machine ID: 32 lowercase hex digits, as
+/// `/etc/machine-id` and `systemd.machine_id=` take it.
+pub fn new_machine_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 /// Renders every file of the seed for one boot.
 pub fn render_seed(
     resolved: &ResolvedConfig,

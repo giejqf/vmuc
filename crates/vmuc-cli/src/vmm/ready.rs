@@ -124,6 +124,8 @@ fn run(shared: &Shared) {
         return fail(shared, 1, "guest agent");
     }
     requirement(shared, 1, "guest agent", true, false);
+    // systemd wrote a duplicate's new machine ID before the agent started.
+    crate::duplicate::machine_id_kept(&shared.dir);
     // The guest clock starts from the RTC's whole seconds, and a resumed
     // one from when it was suspended: set it before anything uses it.
     let now = SystemTime::now()

@@ -20,7 +20,7 @@ pub mod template;
 
 use std::path::PathBuf;
 
-pub use cidata::{SeedFile, new_boot_id, render_seed};
+pub use cidata::{SeedFile, new_boot_id, new_machine_id, render_seed};
 pub use defaults::{Builtin, ResolvedConfig, fill_defaults};
 pub use paths::{VmucHome, validate_instance_name};
 pub use schema::{ByteSize, Digest, InstanceConfig};

@@ -27,6 +27,7 @@ pub struct CreateOverrides {
     pub set: Vec<String>,
 }
 
+#[derive(Debug)]
 pub struct Instance {
     pub name: String,
     pub dir: PathBuf,
@@ -160,7 +161,7 @@ fn default_name(locator: &str) -> String {
     }
 }
 
-fn apply_overrides(cfg: &mut InstanceConfig, o: &CreateOverrides) -> anyhow::Result<()> {
+pub(crate) fn apply_overrides(cfg: &mut InstanceConfig, o: &CreateOverrides) -> anyhow::Result<()> {
     if let Some(c) = o.cpus {
         cfg.cpus = Some(c);
     }

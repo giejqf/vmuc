@@ -9,6 +9,7 @@ mod assets;
 mod boot;
 mod control;
 mod copy;
+mod duplicate;
 mod host;
 mod instance;
 mod keys;
@@ -117,6 +118,31 @@ enum Command {
         /// Seconds to wait for the guest to become ready.
         #[arg(long, default_value_t = 600)]
         timeout: u64,
+    },
+    /// Copy a stopped instance under a new name: its configuration and its
+    /// disk, cloned copy-on-write. The copy gets its own MAC, address,
+    /// hostname and machine ID.
+    #[command(alias = "clone")]
+    Duplicate {
+        source: String,
+        name: String,
+        #[arg(long)]
+        cpus: Option<u32>,
+        /// e.g. `8GiB`.
+        #[arg(long)]
+        memory: Option<String>,
+        /// e.g. `200GiB`; a copy's disk can grow, not shrink.
+        #[arg(long)]
+        disk: Option<String>,
+        /// `LOCATION[:w]`, may repeat; added to the source's mounts.
+        #[arg(long)]
+        mount: Vec<String>,
+        /// `path=value`, applied last, may repeat.
+        #[arg(long = "set", value_name = "PATH=VALUE")]
+        set: Vec<String>,
+        /// Start the copy once it is made.
+        #[arg(long)]
+        start: bool,
     },
     /// Stop, then start.
     Restart {
@@ -445,6 +471,36 @@ fn main() -> anyhow::Result<()> {
         Command::Suspend { name } => lifecycle::suspend(&home, &name)?,
         Command::Resume { name, timeout } => {
             lifecycle::resume(&home, &name, std::time::Duration::from_secs(timeout))?;
+        }
+        Command::Duplicate {
+            source,
+            name,
+            cpus,
+            memory,
+            disk,
+            mount,
+            set,
+            start,
+        } => {
+            let overrides = instance::CreateOverrides {
+                cpus,
+                memory,
+                disk,
+                mounts: mount,
+                set,
+            };
+            let (inst, kind) = duplicate::duplicate(&home, &source, &name, &overrides)?;
+            let how = match kind {
+                vmuc_image::CloneKind::Shared => "its disk shared copy-on-write",
+                vmuc_image::CloneKind::Copied => "its disk copied",
+            };
+            println!(
+                "duplicated {source} as {name} ({how}) in {}",
+                inst.dir.display()
+            );
+            if start {
+                lifecycle::start(&home, &name, std::time::Duration::from_secs(600))?;
+            }
         }
         Command::Restart { name, timeout } => {
             lifecycle::stop(&home, &name, false)?;

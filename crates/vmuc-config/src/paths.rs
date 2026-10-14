@@ -44,6 +44,9 @@ pub mod instance {
     pub const BOOT_SESSION: &str = "boot-session";
     /// A suspended instance's saved state (ADR 0007).
     pub const SUSPEND_DIR: &str = "suspend";
+    /// The machine ID a duplicate's first boot gives its guest, until the
+    /// agent answers on such a boot (ADR 0009).
+    pub const NEW_MACHINE_ID: &str = "new-machine-id";
 }
 
 /// Longest instance name accepted.
