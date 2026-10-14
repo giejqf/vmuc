@@ -13,7 +13,7 @@ vCPUs unless noted.
 | Host footprint, idle guest after first reclaim | < 350 MiB | 362–374 MiB after the first reclaim, 355 after the third (was 460–475) | 802 MiB idle; 2749 MiB once the guest has used and freed 2 GiB | not met, by 5–25 MiB (well under VZ) | [mem-idle](mem-idle.md) |
 | Freed guest memory back to the host | ≥ 90 % within 10 s | 99–100 % of 2 GiB within 10 s, 90 % after 0.5–2.1 s (kernel patch, ADR 0002; stock pacing 6.2–10.4 s) | 0 %, even after the guest drops caches | met | [mem-reclaim](mem-reclaim.md) |
 | Reclaim-induced vCPU stall | < 5 ms | +13 µs worst gap on an unrelated vCPU at saturation | — | met | [reclaim stall](../experiments/2026-10-11-reclaim-stall.md), `crates/vmuc-hv/tests/stall.rs` |
-| Net single flow host↔guest | > 10 Gbit/s | 86.1 host→guest, 134.9 guest→host (vmnet with TSO, shared-memory rings); four flows 105.6 / 117.9 | 71.9 / 108.1 (VZ NAT); four flows 80.3 / 138.3 | met; one flow above VZ both ways, four flows guest→host 85 % of it | [net-iperf](net-iperf.md), [net-cost](net-cost.md) |
+| Net single flow host↔guest | > 10 Gbit/s | 87.3 host→guest, 136.4 guest→host (vmnet with TSO, shared-memory rings); four flows 102.6 / 142.9 | 71.9 / 108.1 (VZ NAT); four flows 80.3 / 138.3 | met; above VZ both ways, one flow and four; costs more CPU than VZ at high rates | [net-iperf](net-iperf.md), [net-cost](net-cost.md) |
 | vsock RPC p50 | < 0.3 ms | 0.138 ms (p99 0.239 ms), new connection per call | — | met | [vsock-rpc](vsock-rpc.md) |
 | virtiofs | ≥ VZ virtiofs on the same host | 3.0–3.2 GB/s write, 3.8 GB/s cold read, open+close 74–78 µs; with DAX (opt-in, `mounts[].dax`): 3.6 GB/s write, 5.8 GB/s read, and reading costs the VM no memory | 2.7 GB/s write, 4.5 GB/s cold read, open+close 72 µs | mixed: ahead on writes and cold stat (8×), behind on cold reads (ahead with DAX), create, unlink | [fs](fs.md), [fs-memory](fs-memory.md) |
 
@@ -42,13 +42,17 @@ Re-run one with `make bench-local NAME=<probe>` on the Mac (or
   shutdown guard, the guest allocator's per-CPU lists, or 16 KiB guest
   pages, a locked decision
   ([idle-footprint experiment](../experiments/2026-10-12-idle-footprint.md)).
-- **Network against VZ.** One flow is above VZ both ways: the shared
-  rings (ADR 0001) lifted host to guest, and watching a busy transmit
-  queue instead of taking a kick per frame lifted guest to host from
+- **Network against VZ.** Above VZ both ways: the shared rings
+  (ADR 0001) lifted host to guest, watching a busy transmit queue
+  instead of taking a kick per frame lifted one flow from the guest from
   76.5 to 134.9 Gbit/s
-  ([transmit kicks](../experiments/2026-10-14-net-transmit-kicks.md)).
-  Four flows from the guest share its one transmit queue and stay at
-  85 % of VZ; more queue pairs (multi-queue virtio-net) would move it.
+  ([transmit kicks](../experiments/2026-10-14-net-transmit-kicks.md)),
+  and filling one half of the helper's ring while it drains the other
+  lifted four flows from 117.9 to 142.9
+  ([four flows](../experiments/2026-10-14-net-four-flows-and-cost.md)).
+  The cost is the gap left: about what VZ spends up to 1 Gbit/s, about
+  40 % of a core more at 10 Gbit/s, most of it the helper process
+  boundary, the rest on the vCPU taking interrupts.
 - **Memory before reclaim.** 20 s after boot vmuc's guest holds 1352 MiB
   against VZ's 802 MiB, mostly page cache from boot; free page reporting
   only returns memory the guest frees, so it comes back on `vmuc reclaim`

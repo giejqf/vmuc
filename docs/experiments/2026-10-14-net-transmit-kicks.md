@@ -72,4 +72,6 @@ since ADR 0003); `vmuc stat` reports it instead.
 **Verdict.** Adopted (`devices/net/rings.rs`). One flow from the guest
 to the host is now 25 % above VZ, at no measurable cost at idle or at
 moderate rates. Four flows stay below VZ; multi-queue virtio-net is the
-candidate.
+candidate. (Follow-up: it was not the queue; half-ring publishing
+lifted four flows above VZ,
+[four flows](2026-10-14-net-four-flows-and-cost.md).)

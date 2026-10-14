@@ -15,3 +15,4 @@ Target: > 10 Gbit/s single flow.
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | vmuc fa649f8 | vmnet shared, TSO | 52.7 | 63.6 | 49.3 | 77.8 |
 | 2026-10-12 | Apple M4 Pro, macOS 26.6.2 | vmuc 50537e0 | vmnet shared, TSO, rings | 87.8 | 76.5 | 100.5 | 110.5 |
 | 2026-10-14 | Apple M4 Pro, macOS 26.6.2 | vmuc 38eac04 | vmnet shared, TSO, rings | 86.1 | 134.9 | 105.6 | 117.9 |
+| 2026-10-14 | Apple M4 Pro, macOS 26.6.2 | vmuc a959254 | vmnet shared, TSO, rings | 87.3 | 136.4 | 102.6 | 142.9 |
