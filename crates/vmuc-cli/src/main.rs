@@ -108,9 +108,16 @@ enum Command {
         #[arg(long, short)]
         force: bool,
     },
-    /// Save a running instance and end its VM; `start` resumes it with
-    /// its programs as they were.
+    /// Save a running instance and end its VM; `resume` (or `start`)
+    /// brings it back with its programs as they were.
     Suspend { name: String },
+    /// Resume a suspended instance; refuses one that is not suspended.
+    Resume {
+        name: String,
+        /// Seconds to wait for the guest to become ready.
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
     /// Stop, then start.
     Restart {
         name: String,
@@ -436,6 +443,9 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Stop { name, force } => lifecycle::stop(&home, &name, force)?,
         Command::Suspend { name } => lifecycle::suspend(&home, &name)?,
+        Command::Resume { name, timeout } => {
+            lifecycle::resume(&home, &name, std::time::Duration::from_secs(timeout))?;
+        }
         Command::Restart { name, timeout } => {
             lifecycle::stop(&home, &name, false)?;
             lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;

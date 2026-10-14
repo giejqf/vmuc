@@ -123,14 +123,24 @@ fn a_suspended_instance_carries_on_where_it_was() {
     assert_eq!(net.trim(), "1", "eth0 kept its address");
 
     // Again, from a resumed guest whose RAM is still the image's.
-    assert!(run(bin, h, &["suspend", "susp"]).status.success());
-    assert!(run(bin, h, &["start", "susp"]).status.success());
-    let again = shell(bin, h, PROBE);
+    let again = resumed_by_name(bin, h);
     assert_eq!(field(&again, "boot_id"), field(&before, "boot_id"));
     assert!(field(&again, "count").parse::<u64>().unwrap() > n1);
     discarding_boots_afresh(bin, h, &field(&before, "boot_id"));
     assert!(run(bin, h, &["stop", "susp"]).status.success());
     assert!(run(bin, h, &["delete", "susp"]).status.success());
+}
+
+/// Suspended again and brought back by `resume`, which refuses an
+/// instance that is running.
+fn resumed_by_name(bin: &Path, h: &Path) -> String {
+    assert!(
+        !run(bin, h, &["resume", "susp"]).status.success(),
+        "resume refuses a running instance"
+    );
+    assert!(run(bin, h, &["suspend", "susp"]).status.success());
+    assert!(run(bin, h, &["resume", "susp"]).status.success());
+    shell(bin, h, PROBE)
 }
 
 /// Suspended again and discarded: the next start boots.

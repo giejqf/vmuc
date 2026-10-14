@@ -78,6 +78,23 @@ pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<(
     wait_ready(&inst, &mut child, started, timeout)
 }
 
+/// `vmuc resume`: `start` for a suspended instance, refused for any other.
+pub fn resume(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<()> {
+    check_suspended(&Instance::open(home, name)?)?;
+    start(home, name, timeout)
+}
+
+fn check_suspended(inst: &Instance) -> anyhow::Result<()> {
+    if crate::suspend::exists(&inst.dir) {
+        return Ok(());
+    }
+    let name = &inst.name;
+    match state::running_pid(&inst.dir) {
+        Some(pid) => bail!("{name} is running (pid {pid}), not suspended"),
+        None => bail!("{name} is not suspended; `vmuc start {name}` boots it"),
+    }
+}
+
 /// `start --foreground`: the VMM stays attached to this terminal (its log
 /// goes there) until the guest powers off; Ctrl-C reaches it as well and
 /// powers the guest off, and this process reports how it ended.
@@ -210,7 +227,7 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
         if crate::suspend::exists(&inst.dir) {
             if !force {
                 bail!(
-                    "{name} is suspended: `vmuc start {name}` resumes it, and \
+                    "{name} is suspended: `vmuc resume {name}` resumes it, and \
                      `vmuc stop --force {name}` discards it (its programs are lost; its \
                      files were synced to disk)"
                 );
@@ -275,7 +292,7 @@ pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     }
     eprintln!(
         "suspended {name} in {:.1} s ({} MiB of memory saved; the guest stopped for {millis} ms); \
-         `vmuc start {name}` resumes it",
+         `vmuc resume {name}` resumes it",
         started.elapsed().as_secs_f64(),
         ram_bytes >> 20
     );
@@ -286,7 +303,7 @@ pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
 pub fn not_running(inst: &Instance) -> anyhow::Error {
     let name = &inst.name;
     if crate::suspend::exists(&inst.dir) {
-        anyhow::anyhow!("{name} is suspended; `vmuc start {name}` resumes it")
+        anyhow::anyhow!("{name} is suspended; `vmuc resume {name}` resumes it")
     } else {
         anyhow::anyhow!("{name} is not running; `vmuc start {name}` first")
     }
@@ -412,6 +429,25 @@ mod tests {
             remote_command(None, Some("/src/it's"), &cmd(&["make"])).as_deref(),
             Some("cd '/src/it'\\''s' 2>/dev/null; make")
         );
+    }
+
+    #[test]
+    fn only_a_suspended_instance_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let inst = Instance {
+            name: "dev".into(),
+            dir: dir.path().to_owned(),
+        };
+        let err = check_suspended(&inst).unwrap_err().to_string();
+        assert!(err.contains("not suspended"), "{err}");
+        state::write_pid(dir.path()).unwrap();
+        let err = check_suspended(&inst).unwrap_err().to_string();
+        assert!(err.contains("is running"), "{err}");
+        fs::remove_file(dir.path().join(files::VMM_PID)).unwrap();
+        let saved = dir.path().join(files::SUSPEND_DIR);
+        fs::create_dir(&saved).unwrap();
+        fs::write(saved.join("suspend.json"), b"{}").unwrap();
+        check_suspended(&inst).unwrap();
     }
 
     #[test]
