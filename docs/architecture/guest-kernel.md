@@ -151,6 +151,7 @@ rebased or dropped in the bump's change, with a `docs/logs/` entry.
 |---|---|
 | `0001-mm-page_reporting-report-the-whole-free-list-per-pass` | Upstream reports a sixteenth of each free list per two-second pass, so freed memory takes 7–10 s to reach the host; vmuc releases a range in microseconds, so each pass reports everything ([ADR 0002](../adr/0002-guest-kernel-reports-everything-per-pass.md)) |
 | `0002-fuse-replay-server-side-changes-as-fsnotify-events` | virtiofs cannot tell the guest that the host changed a share, so inotify watchers never hear of edits made on the Mac; `FUSE_VMUC_IOC_REPLAY` lets the agent replay each host change as the event a local one raises ([ADR 0006](../adr/0006-replay-host-changes-to-guest-watchers.md)) |
+| `0003-arm64-fpsimd-smstop-only-when-streaming-mode-or-za-is-on` | With SME present Linux issues an SMSTOP on every syscall entry and `kernel_neon_begin()`, and on an M4 each one slows the core for some 20 µs even with nothing to stop; reading SVCR first gives back 8–43 % of syscall-heavy work and 25–30 % of kernel crypto, SME kept ([ADR 0008](../adr/0008-guest-kernel-smstop-only-when-needed.md)) |
 
 ## Testing
 

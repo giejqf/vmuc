@@ -1,0 +1,45 @@
+SPDX-License-Identifier: GPL-2.0-only
+(A change to GPL-2.0 Linux source; the rest of vmuc is Apache-2.0.)
+
+Subject: [PATCH] arm64/fpsimd: SMSTOP only when streaming mode or ZA is on
+
+With SME present, every syscall entry runs SMSTOP SM
+(fpsimd_syscall_enter) and every kernel_neon_begin() runs SMSTOP
+(fpsimd_flush_cpu_state), whether or not PSTATE.SM or PSTATE.ZA is set.
+On Apple M4 each SMSTOP slows the core by about 40 % for some 20 us
+afterwards, even when it has nothing to stop, so a guest that sees SME
+runs syscall-heavy work 8-43 % slower and its NEON crypto 25-30 % slower.
+Reading SVCR first costs nothing measurable, and SMSTOP changes nothing
+when both bits are already clear. Only these two helpers change; a task
+that uses streaming mode or ZA is stopped exactly as before.
+
+Evidence: docs/experiments/2026-10-14-guest-crypto-and-smstop.md.
+
+--- a/arch/arm64/include/asm/fpsimd.h
++++ b/arch/arm64/include/asm/fpsimd.h
+@@ -380,14 +380,23 @@
+ 	asm volatile(__msr_s(SYS_SVCR_SMSTART_SM_EL0, "xzr"));
+ }
+ 
++/*
++ * vmuc: stop only what is on. On Apple M4 an SMSTOP slows the core by
++ * about 40 % for some 20 us even when PSTATE.SM and PSTATE.ZA are already
++ * clear, and these run on every syscall entry and every
++ * kernel_neon_begin(). Reading SVCR costs nothing measurable, and an
++ * SMSTOP that changes neither bit has no architectural effect.
++ */
+ static inline void sme_smstop_sm(void)
+ {
+-	asm volatile(__msr_s(SYS_SVCR_SMSTOP_SM_EL0, "xzr"));
++	if (read_sysreg_s(SYS_SVCR) & SVCR_SM_MASK)
++		asm volatile(__msr_s(SYS_SVCR_SMSTOP_SM_EL0, "xzr"));
+ }
+ 
+ static inline void sme_smstop(void)
+ {
+-	asm volatile(__msr_s(SYS_SVCR_SMSTOP_SMZA_EL0, "xzr"));
++	if (read_sysreg_s(SYS_SVCR) & (SVCR_SM_MASK | SVCR_ZA_MASK))
++		asm volatile(__msr_s(SYS_SVCR_SMSTOP_SMZA_EL0, "xzr"));
+ }
+ 
+ extern void __init sme_setup(void);
