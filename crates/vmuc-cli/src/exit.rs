@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! How a command ends for whoever called it (ADR 0010): an exit code by
-//! the kind of failure, and with `--json` the failure as JSON on stderr.
+//! the kind of failure, the failure as JSON on stderr with `--json`, and
+//! with `--json` a result as one JSON document on stdout.
 
 use std::fmt;
 use std::process::ExitCode;
+
+use vmuc_config::VmucHome;
 
 /// What went wrong, as far as a caller acting on it cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +127,22 @@ pub fn report(e: &anyhow::Error, json: bool, program: bool) -> ExitCode {
         eprintln!("Error: {e:?}");
     }
     ExitCode::from(if program { NOT_RUN } else { kind.code() })
+}
+
+/// With `--json`, a command's result: one document on stdout.
+pub fn print_json(value: &serde_json::Value) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+/// With `--json`, an instance command's result: the instance as `list`
+/// shows it, plus the command's own fields from `extra` (an object).
+pub fn print_instance(home: &VmucHome, name: &str, extra: serde_json::Value) -> anyhow::Result<()> {
+    let mut v = serde_json::to_value(crate::instance::row(home, name)?)?;
+    if let (Some(o), serde_json::Value::Object(x)) = (v.as_object_mut(), extra) {
+        o.extend(x);
+    }
+    print_json(&v)
 }
 
 #[cfg(test)]

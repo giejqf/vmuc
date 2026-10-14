@@ -65,7 +65,30 @@ pub fn write_ssh_config(
     Ok(())
 }
 
-pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<()> {
+/// How a start went, for `--json`.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct Started {
+    /// From the VMM's start until ssh answered.
+    pub ready_seconds: f64,
+    /// It came back from a suspended state.
+    pub resumed: bool,
+    /// It was running already; nothing was done.
+    pub was_running: bool,
+}
+
+/// `vmuc start`: boots or resumes the instance and waits until ssh
+/// answers. One that is running already is waited for the same way, so a
+/// start after one that timed out returns once the guest is ready.
+pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<Started> {
+    let inst = Instance::open(home, name)?;
+    if let Some(pid) = state::running_pid(&inst.dir) {
+        eprintln!("{name} is already running");
+        let ready = wait_ready(&inst, Vmm::Running(pid), Instant::now(), timeout)?;
+        return Ok(Started {
+            was_running: true,
+            ..ready
+        });
+    }
     let (inst, mut child, started) = spawn_vmm(home, name, false)?;
     let verb = if crate::suspend::exists(&inst.dir) {
         "resuming"
@@ -76,11 +99,11 @@ pub fn start(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<(
         "{verb} {name} (log: {})",
         inst.dir.join(files::VMM_LOG).display()
     );
-    wait_ready(&inst, &mut child, started, timeout)
+    wait_ready(&inst, Vmm::Spawned(&mut child), started, timeout)
 }
 
 /// `vmuc resume`: `start` for a suspended instance, refused for any other.
-pub fn resume(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<()> {
+pub fn resume(home: &VmucHome, name: &str, timeout: Duration) -> anyhow::Result<Started> {
     check_suspended(&Instance::open(home, name)?)?;
     start(home, name, timeout)
 }
@@ -111,7 +134,7 @@ pub fn start_foreground(home: &VmucHome, name: &str, timeout: Duration) -> anyho
     // SAFETY: ignoring SIGINT in this process only; the child already runs.
     unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
     eprintln!("starting {name} in the foreground; Ctrl-C powers it off");
-    wait_ready(&inst, &mut child, started, timeout)?;
+    wait_ready(&inst, Vmm::Spawned(&mut child), started, timeout)?;
     let status = child.wait()?;
     if status.success() {
         eprintln!("{name} stopped");
@@ -158,15 +181,23 @@ fn spawn_vmm(
     Ok((inst, child, started))
 }
 
+/// The VMM `wait_ready` watches: one this process spawned, or one that
+/// was running already.
+enum Vmm<'a> {
+    Spawned(&'a mut std::process::Child),
+    Running(u32),
+}
+
 /// Follows the VMM's events until the guest is ready.
 fn wait_ready(
     inst: &Instance,
-    child: &mut std::process::Child,
+    mut vmm: Vmm<'_>,
     started: Instant,
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Started> {
     let name = &inst.name;
     let mut shown = 0;
+    let mut resumed = false;
     loop {
         let events = state::read_events(&inst.dir);
         for e in events.iter().skip(shown) {
@@ -182,13 +213,16 @@ fn wait_ready(
                 }
                 EventKind::Resumed { restore_ms, .. } => {
                     eprintln!("  resumed from its suspended state in {restore_ms} ms");
+                    resumed = true;
                 }
                 EventKind::Running { .. } => {
-                    eprintln!(
-                        "{name} is running ({:.1} s); `vmuc shell {name}`",
-                        started.elapsed().as_secs_f64()
-                    );
-                    return Ok(());
+                    let ready_seconds = started.elapsed().as_secs_f64();
+                    eprintln!("{name} is running ({ready_seconds:.1} s); `vmuc shell {name}`");
+                    return Ok(Started {
+                        ready_seconds,
+                        resumed,
+                        was_running: false,
+                    });
                 }
                 EventKind::Warning { message } => eprintln!("  warning: {message}"),
                 EventKind::Degraded { errors } => {
@@ -201,13 +235,26 @@ fn wait_ready(
             }
         }
         shown = events.len();
-        if let Some(status) = child.try_wait()? {
-            let kind = status.code().map_or(Kind::Failed, Kind::from_code);
-            fail!(
-                kind,
-                "the VMM exited ({status}) while starting{}",
-                log_tail(inst)
-            );
+        match &mut vmm {
+            Vmm::Spawned(child) => {
+                if let Some(status) = child.try_wait()? {
+                    let kind = status.code().map_or(Kind::Failed, Kind::from_code);
+                    fail!(
+                        kind,
+                        "the VMM exited ({status}) while starting{}",
+                        log_tail(inst)
+                    );
+                }
+            }
+            Vmm::Running(pid) => {
+                if !state::pid_alive(*pid) {
+                    fail!(
+                        Kind::Failed,
+                        "the VMM (pid {pid}) exited while starting{}",
+                        log_tail(inst)
+                    );
+                }
+            }
         }
         if started.elapsed() > timeout {
             fail!(
@@ -283,12 +330,12 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
 
 /// `vmuc suspend`: the VMM saves the running guest into the instance and
 /// ends; `vmuc start` resumes it (ADR 0007).
-pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
+pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<Saved> {
     let inst = Instance::open(home, name)?;
     let Some(pid) = state::running_pid(&inst.dir) else {
         if crate::suspend::exists(&inst.dir) {
             eprintln!("{name} is already suspended");
-            return Ok(());
+            return Ok(Saved::default());
         }
         fail!(Kind::WrongState, "{name} is not running");
     };
@@ -316,7 +363,20 @@ pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
         started.elapsed().as_secs_f64(),
         ram_bytes >> 20
     );
-    Ok(())
+    Ok(Saved {
+        saved_bytes: ram_bytes,
+        paused_ms: millis,
+    })
+}
+
+/// What a suspend saved, for `--json` (zeros when it was suspended
+/// already).
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct Saved {
+    /// Guest memory written to the instance.
+    pub saved_bytes: u64,
+    /// How long the guest stood still while it was saved.
+    pub paused_ms: u64,
 }
 
 /// The error for a command that needs the instance running.

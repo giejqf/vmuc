@@ -549,22 +549,32 @@ pub struct ListRow {
     pub dir: PathBuf,
 }
 
-pub fn list(home: &VmucHome) -> anyhow::Result<Vec<ListRow>> {
-    let mut rows = Vec::new();
-    for name in home.instance_names()? {
-        let inst = Instance::open(home, &name)?;
-        let r = inst.resolved(home)?;
-        rows.push(ListRow {
-            status: status(&inst.dir),
-            addrs: addresses(&inst.dir),
-            name,
-            cpus: r.cpus,
-            memory: r.memory.to_string(),
-            disk: r.disk.to_string(),
-            dir: inst.dir,
-        });
+/// Every instance, or the ones `names` lists (`not_found` for one that
+/// does not exist).
+pub fn list(home: &VmucHome, names: &[String]) -> anyhow::Result<Vec<ListRow>> {
+    if names.is_empty() {
+        home.instance_names()?
+            .iter()
+            .map(|n| row(home, n))
+            .collect()
+    } else {
+        names.iter().map(|n| row(home, n)).collect()
     }
-    Ok(rows)
+}
+
+/// One instance as `vmuc list` shows it.
+pub fn row(home: &VmucHome, name: &str) -> anyhow::Result<ListRow> {
+    let inst = Instance::open(home, name)?;
+    let r = inst.resolved(home)?;
+    Ok(ListRow {
+        status: status(&inst.dir),
+        addrs: addresses(&inst.dir),
+        name: inst.name,
+        cpus: r.cpus,
+        memory: r.memory.to_string(),
+        disk: r.disk.to_string(),
+        dir: inst.dir,
+    })
 }
 
 #[cfg(test)]

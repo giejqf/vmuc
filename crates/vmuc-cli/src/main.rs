@@ -207,6 +207,8 @@ enum Command {
     /// List instances.
     #[command(alias = "ls")]
     List {
+        /// Only these instances.
+        names: Vec<String>,
         #[arg(long, short, value_enum, default_value = "table")]
         format: Format,
         /// Names only.
@@ -378,12 +380,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             };
             let template = normalize_locator(&template);
             let inst = instance::create(&home, &store, &template, name.as_deref(), &overrides)?;
-            println!("created {} in {}", inst.name, inst.dir.display());
+            if json {
+                exit::print_instance(&home, &inst.name, serde_json::json!({}))?;
+            } else {
+                println!("created {} in {}", inst.name, inst.dir.display());
+            }
         }
-        Command::List { format, quiet } => {
-            let rows = instance::list(&home)?;
+        Command::List {
+            names,
+            format,
+            quiet,
+        } => {
+            let rows = instance::list(&home, &names)?;
             match format {
                 _ if quiet => rows.iter().for_each(|r| println!("{}", r.name)),
+                _ if json => println!("{}", serde_json::to_string_pretty(&rows)?),
                 Format::Json => println!("{}", serde_json::to_string_pretty(&rows)?),
                 Format::Table => {
                     println!(
@@ -422,9 +433,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 lifecycle::stop(&home, &name, true)?;
             }
             instance::delete(&home, &name)?;
-            println!("deleted {name}");
+            if json {
+                exit::print_json(&serde_json::json!({ "name": name, "deleted": true }))?;
+            } else {
+                println!("deleted {name}");
+            }
         }
         Command::Template { cmd } => match cmd {
+            TemplateCmd::List if json => exit::print_json(&serde_json::json!(store.names()))?,
             TemplateCmd::List => store.names().iter().for_each(|n| println!("{n}")),
             TemplateCmd::Show { name } => {
                 let vmuc_config::Resolution::Loaded(t) =
@@ -432,7 +448,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 else {
                     exit::fail!(exit::Kind::Invalid, "{name} is a URL; download it first");
                 };
-                print!("{}", store.embed(&t)?.to_yaml()?);
+                let cfg = store.embed(&t)?;
+                if json {
+                    exit::print_json(&serde_json::to_value(&cfg)?)?;
+                } else {
+                    print!("{}", cfg.to_yaml()?);
+                }
             }
         },
         Command::Boot {
@@ -481,13 +502,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             if foreground {
                 lifecycle::start_foreground(&home, &name, timeout)?;
             } else {
-                lifecycle::start(&home, &name, timeout)?;
+                let ready = lifecycle::start(&home, &name, timeout)?;
+                if json {
+                    exit::print_instance(&home, &name, serde_json::to_value(ready)?)?;
+                }
             }
         }
-        Command::Stop { name, force } => lifecycle::stop(&home, &name, force)?,
-        Command::Suspend { name } => lifecycle::suspend(&home, &name)?,
+        Command::Stop { name, force } => {
+            lifecycle::stop(&home, &name, force)?;
+            if json {
+                exit::print_instance(&home, &name, serde_json::json!({}))?;
+            }
+        }
+        Command::Suspend { name } => {
+            let saved = lifecycle::suspend(&home, &name)?;
+            if json {
+                exit::print_instance(&home, &name, serde_json::to_value(saved)?)?;
+            }
+        }
         Command::Resume { name, timeout } => {
-            lifecycle::resume(&home, &name, std::time::Duration::from_secs(timeout))?;
+            let ready = lifecycle::resume(&home, &name, std::time::Duration::from_secs(timeout))?;
+            if json {
+                exit::print_instance(&home, &name, serde_json::to_value(ready)?)?;
+            }
         }
         Command::Duplicate {
             source,
@@ -507,21 +544,45 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 set,
             };
             let (inst, kind) = duplicate::duplicate(&home, &source, &name, &overrides)?;
-            let how = match kind {
-                vmuc_image::CloneKind::Shared => "its disk shared copy-on-write",
-                vmuc_image::CloneKind::Copied => "its disk copied",
+            let shared = kind == vmuc_image::CloneKind::Shared;
+            let how = if shared {
+                "its disk shared copy-on-write"
+            } else {
+                "its disk copied"
             };
-            println!(
+            let line = format!(
                 "duplicated {source} as {name} ({how}) in {}",
                 inst.dir.display()
             );
-            if start {
-                lifecycle::start(&home, &name, std::time::Duration::from_secs(600))?;
+            // Under --json the result is the document; the line is progress.
+            if json {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+            let ready = if start {
+                Some(lifecycle::start(
+                    &home,
+                    &name,
+                    std::time::Duration::from_secs(600),
+                )?)
+            } else {
+                None
+            };
+            if json {
+                let mut extra = serde_json::json!({ "source": source, "disk_shared": shared });
+                if let Some(r) = ready {
+                    extra["ready_seconds"] = serde_json::json!(r.ready_seconds);
+                }
+                exit::print_instance(&home, &name, extra)?;
             }
         }
         Command::Restart { name, timeout } => {
             lifecycle::stop(&home, &name, false)?;
-            lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
+            let ready = lifecycle::start(&home, &name, std::time::Duration::from_secs(timeout))?;
+            if json {
+                exit::print_instance(&home, &name, serde_json::to_value(ready)?)?;
+            }
         }
         Command::Shell {
             name,
@@ -534,11 +595,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Edit { name } => instance::edit(&home, &name)?,
         Command::Prune => {
             let pruned = vmuc_image::Cache::open_default()?.prune()?;
-            for p in &pruned {
-                println!("removed {} ({})", p.url, stat::human(p.bytes));
-            }
             let total: u64 = pruned.iter().map(|p| p.bytes).sum();
-            println!("freed {}", stat::human(total));
+            if json {
+                let removed: Vec<_> = pruned
+                    .iter()
+                    .map(|p| serde_json::json!({ "url": p.url, "bytes": p.bytes }))
+                    .collect();
+                exit::print_json(&serde_json::json!({ "removed": removed, "freed_bytes": total }))?;
+            } else {
+                for p in &pruned {
+                    println!("removed {} ({})", p.url, stat::human(p.bytes));
+                }
+                println!("freed {}", stat::human(total));
+            }
         }
         Command::Completion { shell } => {
             clap_complete::generate(shell, &mut public_command(), "vmuc", &mut std::io::stdout());
@@ -552,6 +621,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             match control::request(&dir, &vmuc_proto::ControlRequest::ReclaimNow)? {
                 vmuc_proto::ControlResponse::Ok => {
                     eprintln!("asked {name} to drop caches and compact");
+                    if json {
+                        exit::print_json(
+                            &serde_json::json!({ "name": name, "reclaim": "requested" }),
+                        )?;
+                    }
                 }
                 other => anyhow::bail!("{other:?}"),
             }

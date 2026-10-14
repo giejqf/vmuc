@@ -76,7 +76,7 @@ impl Local {
 
 impl Source for Local {
     fn instances(&mut self) -> Vec<Instance> {
-        let rows = match instance::list(&self.home) {
+        let rows = match instance::list(&self.home, &[]) {
             Ok(rows) => rows,
             Err(e) => {
                 let _ = self.tx.send(format!("listing instances: {e}"));
