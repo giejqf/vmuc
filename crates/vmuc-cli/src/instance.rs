@@ -4,7 +4,7 @@
 //! parameters a VMM or the QEMU harness needs.
 
 use std::fs;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -14,7 +14,6 @@ use vmuc_config::schema::{DigestAlgorithm, Mount};
 use vmuc_config::{
     Builtin, InstanceConfig, Resolution, ResolvedConfig, TemplateStore, VmucHome, fill_defaults,
 };
-use vmuc_image::sparse::{SparseFileExt, SparseWriter};
 use vmuc_image::{Cache, Digest, decompress_if_needed};
 
 /// Overrides from `vmuc create` flags, applied on top of the template.
@@ -238,7 +237,7 @@ pub fn prepare_disk(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Resul
         vmuc_image::convert_to_raw(&path, &tmp, |_, _| {})?;
     } else {
         eprintln!("copying raw image");
-        sparse_copy(&path, &tmp)?;
+        vmuc_image::sparse_copy(&path, &tmp)?;
     }
     let want = resolved.disk.bytes();
     let f = fs::OpenOptions::new().write(true).open(&tmp)?;
@@ -266,25 +265,6 @@ fn is_qcow2(path: &Path) -> io::Result<bool> {
     let mut magic = [0u8; 4];
     let n = fs::File::open(path)?.read(&mut magic)?;
     Ok(n == 4 && &magic == b"QFI\xfb")
-}
-
-fn sparse_copy(src: &Path, dst: &Path) -> io::Result<()> {
-    let mut input = fs::File::open(src)?;
-    let out = fs::File::create(dst)?;
-    let mut writer = SparseWriter::new(out);
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = input.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        writer.write_all(&buf[..n])?;
-    }
-    let mut done = writer.finish()?;
-    done.inner.set_len(done.len)?;
-    done.inner.settle_holes(&done.holes)?;
-    done.inner.seek(SeekFrom::Start(0))?;
-    Ok(())
 }
 
 /// Mount tags are stable per (location, mount point) so the guest fstab
@@ -653,20 +633,5 @@ mod tests {
         assert_eq!(a, mount_tag(Path::new("/Users/me"), "/Users/me"));
         assert_ne!(a, mount_tag(Path::new("/Users/me"), "/mnt"));
         assert_eq!(a.len(), 13);
-    }
-
-    #[test]
-    fn sparse_copy_round_trips() {
-        let dir = std::env::temp_dir().join(format!("vmuc-sparse-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("src");
-        let mut data = vec![0u8; 3 << 20];
-        data[1 << 20] = 7;
-        data[(3 << 20) - 1] = 9;
-        fs::write(&src, &data).unwrap();
-        let dst = dir.join("dst");
-        sparse_copy(&src, &dst).unwrap();
-        assert_eq!(fs::read(&dst).unwrap(), data);
-        let _ = fs::remove_dir_all(&dir);
     }
 }

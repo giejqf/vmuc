@@ -15,7 +15,7 @@
 //! [`SparseFileExt::settle_holes`] does with the holes a writer left.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
@@ -56,6 +56,59 @@ pub fn create_sparse(path: &Path, size: u64) -> io::Result<File> {
 /// Bytes actually allocated to `path` on disk (`st_blocks * 512`).
 pub fn allocated_bytes(path: &Path) -> io::Result<u64> {
     Ok(std::fs::metadata(path)?.blocks() * 512)
+}
+
+/// Copies `src` to `dst` (created or truncated), leaving runs of zeros as
+/// holes.
+pub fn sparse_copy(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut input = File::open(src)?;
+    let mut writer = SparseWriter::new(File::create(dst)?);
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = input.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+    }
+    let done = writer.finish()?;
+    done.inner.set_len(done.len)?;
+    done.inner.settle_holes(&done.holes)
+}
+
+/// How [`clone_file`] made its copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloneKind {
+    /// The two files share their blocks until either one writes (APFS).
+    Shared,
+    /// The bytes were copied, holes kept.
+    Copied,
+}
+
+/// Copies `src` to `dst`, which must not exist: an APFS clone where the
+/// volume can make one (constant time, no space until the files diverge),
+/// else a [`sparse_copy`]. A symlink at `src` is followed.
+pub fn clone_file(src: &Path, dst: &Path) -> io::Result<CloneKind> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let from = CString::new(src.as_os_str().as_bytes())?;
+        let to = CString::new(dst.as_os_str().as_bytes())?;
+        // SAFETY: both are NUL-terminated paths that outlive the call.
+        if unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) } == 0 {
+            return Ok(CloneKind::Shared);
+        }
+        let e = io::Error::last_os_error();
+        if !matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::EXDEV)) {
+            return Err(e);
+        }
+    }
+    if dst.exists() {
+        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    }
+    sparse_copy(src, dst)?;
+    Ok(CloneKind::Copied)
 }
 
 /// Sparse-file operations on an open [`File`].
@@ -242,6 +295,42 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Read};
     use std::os::unix::fs::FileExt;
+
+    #[test]
+    fn sparse_copy_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let mut data = vec![0u8; 3 << 20];
+        data[1 << 20] = 7;
+        data[(3 << 20) - 1] = 9;
+        std::fs::write(&src, &data).unwrap();
+        let dst = dir.path().join("dst");
+        sparse_copy(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), data);
+    }
+
+    #[test]
+    fn a_clone_reads_the_same_and_stays_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let mut data = vec![0u8; 2 << 20];
+        data[12345] = 1;
+        std::fs::write(&src, &data).unwrap();
+        let dst = dir.path().join("dst");
+        let kind = clone_file(&src, &dst).unwrap();
+        if cfg!(target_os = "macos") {
+            assert_eq!(kind, CloneKind::Shared, "the temp dir is on APFS");
+        }
+        assert_eq!(std::fs::read(&dst).unwrap(), data);
+        std::fs::write(&dst, b"changed").unwrap();
+        assert_eq!(
+            std::fs::read(&src).unwrap(),
+            data,
+            "the source is untouched"
+        );
+        let again = clone_file(&src, &dst).unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::AlreadyExists);
+    }
 
     #[test]
     fn create_is_sparse() {

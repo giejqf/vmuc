@@ -32,7 +32,9 @@ pub use digest::Digest;
 pub use gpt::{Gpt, Guid, Partition, root_partition_index};
 pub use iso9660::{SeedFile, write_iso, write_iso_file};
 pub use qcow2::{Qcow2, convert_to_raw};
-pub use sparse::{SparseFileExt, allocated_bytes, create_sparse};
+pub use sparse::{
+    CloneKind, SparseFileExt, allocated_bytes, clone_file, create_sparse, sparse_copy,
+};
 
 /// Errors produced by this crate.
 #[derive(Debug, thiserror::Error)]
