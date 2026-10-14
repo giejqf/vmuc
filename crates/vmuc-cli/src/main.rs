@@ -10,6 +10,7 @@ mod boot;
 mod control;
 mod copy;
 mod duplicate;
+mod exit;
 mod host;
 mod instance;
 mod keys;
@@ -23,6 +24,7 @@ mod tui;
 mod vmm;
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use vmuc_config::{TemplateStore, VmucHome};
@@ -33,6 +35,15 @@ struct Cli {
     /// Log filter, e.g. `info` or `vmuc_vmm=debug`.
     #[arg(long, env = "VMUC_LOG", default_value = "warn", global = true)]
     log: String,
+    /// Print results as JSON on stdout, failures as JSON on stderr.
+    #[arg(
+        long,
+        env = "VMUC_JSON",
+        global = true,
+        action = clap::ArgAction::SetTrue,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -63,10 +74,7 @@ impl From<Level> for vmuc_proto::PressureLevel {
 #[derive(Subcommand)]
 enum Command {
     /// Show versions, host capabilities and paths.
-    Info {
-        #[arg(long)]
-        json: bool,
-    },
+    Info,
     /// Create an instance from a template (`template:NAME`, a file, or a URL).
     Create {
         /// `ubuntu`, `template:docker`, `./my.yaml`, `https://…/x.yaml`.
@@ -159,11 +167,9 @@ enum Command {
     /// Memory: host footprint, guest totals, reclaimed bytes.
     Stat {
         name: String,
-        /// Refresh every second.
+        /// Refresh every second (with --json, one document per line).
         #[arg(long, short)]
         watch: bool,
-        #[arg(long)]
-        json: bool,
     },
     /// Ask the guest to drop caches and compact so its free memory can be
     /// handed back now.
@@ -319,9 +325,19 @@ enum TemplateCmd {
     },
 }
 
-#[allow(clippy::too_many_lines)]
-fn main() -> anyhow::Result<()> {
+fn main() -> ExitCode {
     let cli = Cli::parse();
+    let json = cli.json;
+    let program = matches!(cli.command, Command::Shell { .. });
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => exit::report(&e, json, program),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run(cli: Cli) -> anyhow::Result<()> {
+    let json = cli.json;
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(&cli.log))
         .with_writer(std::io::stderr)
@@ -331,7 +347,7 @@ fn main() -> anyhow::Result<()> {
     let store = TemplateStore::new(&home, installed_templates().as_deref());
 
     match cli.command {
-        Command::Info { json } => {
+        Command::Info => {
             let info = host::HostInfo::collect();
             let inventory = assets::Inventory::collect();
             if json {
@@ -398,7 +414,8 @@ fn main() -> anyhow::Result<()> {
         Command::Delete { name, force } => {
             if state::running_pid(&home.instance_dir(&name)?).is_some() {
                 if !force {
-                    anyhow::bail!(
+                    exit::fail!(
+                        exit::Kind::WrongState,
                         "{name} is running; `vmuc stop {name}` or `vmuc delete --force {name}`"
                     );
                 }
@@ -413,7 +430,7 @@ fn main() -> anyhow::Result<()> {
                 let vmuc_config::Resolution::Loaded(t) =
                     store.resolve(&normalize_locator(&name), None)?
                 else {
-                    anyhow::bail!("{name} is a URL; download it first");
+                    exit::fail!(exit::Kind::Invalid, "{name} is a URL; download it first");
                 };
                 print!("{}", store.embed(&t)?.to_yaml()?);
             }
@@ -511,7 +528,7 @@ fn main() -> anyhow::Result<()> {
             workdir,
             command,
         } => lifecycle::shell(&home, &name, workdir.as_deref(), &command)?,
-        Command::Stat { name, watch, json } => stat::run(&home, &name, watch, json)?,
+        Command::Stat { name, watch } => stat::run(&home, &name, watch, json)?,
         Command::Tui => tui::run(&home)?,
         Command::Copy { recursive, paths } => copy::run(&home, recursive, &paths)?,
         Command::Edit { name } => instance::edit(&home, &name)?,

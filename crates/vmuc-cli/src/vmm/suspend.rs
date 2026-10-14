@@ -65,7 +65,8 @@ pub fn check(name: &str, then: &Shape, now: &Shape) -> anyhow::Result<()> {
     if changed.is_empty() {
         return Ok(());
     }
-    anyhow::bail!(
+    crate::exit::fail!(
+        crate::exit::Kind::WrongState,
         "cannot resume {name}: its machine changed since it was suspended ({}); revert that \
          with `vmuc edit {name}`, or `vmuc stop --force {name}` discards the suspended state \
          and the next start boots",

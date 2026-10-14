@@ -12,6 +12,7 @@ use vmuc_config::VmucHome;
 use vmuc_config::paths::instance as files;
 use vmuc_proto::{ControlRequest, ControlResponse, EventKind};
 
+use crate::exit::{Kind, fail};
 use crate::instance::Instance;
 use crate::state;
 use crate::{control, keys};
@@ -90,8 +91,14 @@ fn check_suspended(inst: &Instance) -> anyhow::Result<()> {
     }
     let name = &inst.name;
     match state::running_pid(&inst.dir) {
-        Some(pid) => bail!("{name} is running (pid {pid}), not suspended"),
-        None => bail!("{name} is not suspended; `vmuc start {name}` boots it"),
+        Some(pid) => fail!(
+            Kind::WrongState,
+            "{name} is running (pid {pid}), not suspended"
+        ),
+        None => fail!(
+            Kind::WrongState,
+            "{name} is not suspended; `vmuc start {name}` boots it"
+        ),
     }
 }
 
@@ -121,7 +128,7 @@ fn spawn_vmm(
 ) -> anyhow::Result<(Instance, std::process::Child, Instant)> {
     let inst = Instance::open(home, name)?;
     if let Some(pid) = state::running_pid(&inst.dir) {
-        bail!("{name} is already running (pid {pid})");
+        fail!(Kind::WrongState, "{name} is already running (pid {pid})");
     }
     let resolved = inst.resolved(home)?;
     keys::ensure_keypair(home)?;
@@ -195,10 +202,16 @@ fn wait_ready(
         }
         shown = events.len();
         if let Some(status) = child.try_wait()? {
-            bail!("the VMM exited ({status}) while starting{}", log_tail(inst));
+            let kind = status.code().map_or(Kind::Failed, Kind::from_code);
+            fail!(
+                kind,
+                "the VMM exited ({status}) while starting{}",
+                log_tail(inst)
+            );
         }
         if started.elapsed() > timeout {
-            bail!(
+            fail!(
+                Kind::TimedOut,
                 "{name} did not become ready within {timeout:?}; it keeps booting (see {})",
                 inst.dir.join(files::VMM_LOG).display()
             );
@@ -226,7 +239,8 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
         state::remove_pid(&inst.dir);
         if crate::suspend::exists(&inst.dir) {
             if !force {
-                bail!(
+                fail!(
+                    Kind::WrongState,
                     "{name} is suspended: `vmuc resume {name}` resumes it, and \
                      `vmuc stop --force {name}` discards it (its programs are lost; its \
                      files were synced to disk)"
@@ -248,7 +262,10 @@ pub fn stop(home: &VmucHome, name: &str, force: bool) -> anyhow::Result<()> {
     while state::pid_alive(pid) {
         if started.elapsed() > limit {
             if !force {
-                bail!("{name} (pid {pid}) is still running; try `vmuc stop --force {name}`");
+                fail!(
+                    Kind::TimedOut,
+                    "{name} (pid {pid}) is still running; try `vmuc stop --force {name}`"
+                );
             }
             // The VMM acknowledged the forced stop but cannot finish
             // tearing the VM down (a device thread stuck in the host).
@@ -273,7 +290,7 @@ pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
             eprintln!("{name} is already suspended");
             return Ok(());
         }
-        bail!("{name} is not running");
+        fail!(Kind::WrongState, "{name} is not running");
     };
     let started = Instant::now();
     let (ram_bytes, millis) =
@@ -286,7 +303,10 @@ pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
         };
     while state::pid_alive(pid) {
         if started.elapsed() > SUSPEND_WAIT {
-            bail!("{name} is saved, but its VMM (pid {pid}) has not exited");
+            fail!(
+                Kind::TimedOut,
+                "{name} is saved, but its VMM (pid {pid}) has not exited"
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -303,9 +323,11 @@ pub fn suspend(home: &VmucHome, name: &str) -> anyhow::Result<()> {
 pub fn not_running(inst: &Instance) -> anyhow::Error {
     let name = &inst.name;
     if crate::suspend::exists(&inst.dir) {
-        anyhow::anyhow!("{name} is suspended; `vmuc resume {name}` resumes it")
+        Kind::WrongState.err(format!(
+            "{name} is suspended; `vmuc resume {name}` resumes it"
+        ))
     } else {
-        anyhow::anyhow!("{name} is not running; `vmuc start {name}` first")
+        Kind::WrongState.err(format!("{name} is not running; `vmuc start {name}` first"))
     }
 }
 

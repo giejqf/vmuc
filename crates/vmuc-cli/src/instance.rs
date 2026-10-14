@@ -16,6 +16,8 @@ use vmuc_config::{
 };
 use vmuc_image::{Cache, Digest, decompress_if_needed};
 
+use crate::exit::{Kind, fail};
+
 /// Overrides from `vmuc create` flags, applied on top of the template.
 #[derive(Debug, Default)]
 pub struct CreateOverrides {
@@ -37,7 +39,8 @@ impl Instance {
     pub fn open(home: &VmucHome, name: &str) -> anyhow::Result<Self> {
         let dir = home.instance_dir(name)?;
         if !dir.join(files::CONFIG).is_file() {
-            bail!(
+            fail!(
+                Kind::NotFound,
                 "instance {name:?} does not exist (looked in {})",
                 dir.display()
             );
@@ -131,7 +134,11 @@ pub fn create(
 
     let dir = home.instance_dir(&name)?;
     if dir.exists() {
-        bail!("instance {name:?} already exists at {}", dir.display());
+        fail!(
+            Kind::Exists,
+            "instance {name:?} already exists at {}",
+            dir.display()
+        );
     }
     // Validate before touching the filesystem.
     let resolved = resolve(home, &name, &cfg)?;
@@ -484,7 +491,7 @@ fn apply_edit(
 pub fn delete(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     let dir = home.instance_dir(name)?;
     if !dir.exists() {
-        bail!("instance {name:?} does not exist");
+        fail!(Kind::NotFound, "instance {name:?} does not exist");
     }
     fs::remove_dir_all(&dir).with_context(|| dir.display().to_string())?;
     Ok(())

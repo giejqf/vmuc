@@ -6,11 +6,12 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use vmuc_config::VmucHome;
 use vmuc_config::paths::instance as files;
 use vmuc_image::CloneKind;
 
+use crate::exit::{Kind, fail};
 use crate::instance::{self, CreateOverrides, Instance};
 use crate::state;
 
@@ -24,10 +25,14 @@ pub fn duplicate(
 ) -> anyhow::Result<(Instance, CloneKind)> {
     let src = Instance::open(home, source)?;
     if let Some(pid) = state::running_pid(&src.dir) {
-        bail!("{source} is running (pid {pid}); stop it first");
+        fail!(
+            Kind::WrongState,
+            "{source} is running (pid {pid}); stop it first"
+        );
     }
     if crate::suspend::exists(&src.dir) {
-        bail!(
+        fail!(
+            Kind::WrongState,
             "{source} is suspended, and its disk lacks what its memory holds; \
              resume and stop it, or discard the state with `vmuc stop --force {source}`"
         );
@@ -41,7 +46,11 @@ pub fn duplicate(
     }
     let dir = home.instance_dir(name)?;
     if dir.exists() {
-        bail!("instance {name:?} already exists at {}", dir.display());
+        fail!(
+            Kind::Exists,
+            "instance {name:?} already exists at {}",
+            dir.display()
+        );
     }
     // Validate before touching the filesystem.
     let resolved = instance::resolve(home, name, &cfg)?;
@@ -50,7 +59,8 @@ pub fn duplicate(
         .len();
     let want = overrides.disk.as_ref().map(|_| resolved.disk.bytes());
     if want.is_some_and(|w| w < have) {
-        bail!(
+        fail!(
+            Kind::Invalid,
             "{source}'s disk is {} MiB; a copy's disk can grow, not shrink",
             have >> 20
         );
