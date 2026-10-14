@@ -293,6 +293,9 @@ pub struct Stat {
     pub net_tx_bytes: u64,
     #[serde(default)]
     pub net_dropped: u64,
+    /// The NIC's frames travel through the helper's shared rings.
+    #[serde(default)]
+    pub net_rings: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

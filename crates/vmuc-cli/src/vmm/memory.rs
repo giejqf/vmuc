@@ -118,6 +118,7 @@ pub fn stat(shared: &Shared) -> Stat {
             .net
             .as_ref()
             .map_or(0, |n| n.dropped.load(Ordering::Relaxed)),
+        net_rings: shared.net.as_ref().is_some_and(|n| n.rings),
     }
 }
 

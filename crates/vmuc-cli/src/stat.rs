@@ -57,10 +57,13 @@ fn render(name: &str, s: &Stat) -> String {
         Duration::from_nanos(s.host_cpu_nanos).as_secs_f64(),
         human(s.net_rx_bytes),
         human(s.net_tx_bytes),
-        if s.net_dropped == 0 {
-            String::new()
-        } else {
-            format!(", {} frames dropped", s.net_dropped)
+        match (s.net_dropped, s.net_rings) {
+            (0, false) => String::new(),
+            (0, true) => " (shared rings)".to_owned(),
+            (n, rings) => format!(
+                ", {n} frames dropped{}",
+                if rings { " (shared rings)" } else { "" }
+            ),
         },
     )
 }

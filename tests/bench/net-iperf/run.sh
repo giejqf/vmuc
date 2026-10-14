@@ -35,12 +35,10 @@ export VMUC_HOME=$home
 ip=$("$vmuc" shell netb -- 'ip -4 -o addr show eth0' </dev/null | awk '{print $4}' | cut -d/ -f1)
 tso=$("$vmuc" shell netb -- 'ethtool -k eth0' </dev/null | awk '/^tcp-segmentation-offload:/ {print $2}')
 
-# The VMM maps the 8 MiB ring region only when the helper relays through it.
-vmm=$(cat "$home/netb/vmm.pid")
-# grep -c reads everything: with pipefail, grep -q's early exit would
-# SIGPIPE vmmap and fail the pipeline.
-found=$(vmmap "$vmm" 2>/dev/null | grep -c "^shared memory .*\[ *8224K" || true)
-rings=$([ "${found:-0}" -gt 0 ] && echo yes || echo no)
+# Whether the helper relays through the shared rings (ADR 0001). (vmmap
+# no longer does: guest RAM is tens of thousands of regions, ADR 0003.)
+rings=$("$vmuc" stat netb --json </dev/null |
+    python3 -c 'import json, sys; print("yes" if json.load(sys.stdin)["net_rings"] else "no")')
 
 python3 -I - "$root" "$ip" "$tso" "$(git -C "$root" rev-parse --short HEAD)" "$rings" <<'PY'
 import datetime, json, subprocess, sys, time

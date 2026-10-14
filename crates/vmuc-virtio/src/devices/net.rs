@@ -67,6 +67,8 @@ pub struct NetCounters {
     pub tx_frames: AtomicU64,
     /// Frames dropped in either direction.
     pub dropped: AtomicU64,
+    /// Frames travel through the helper's shared rings (ADR 0001).
+    pub rings: bool,
 }
 
 impl NetCounters {
@@ -442,7 +444,10 @@ impl Net {
         poll.registry()
             .register(&mut socket, SOCKET, Interest::READABLE | Interest::WRITABLE)?;
         let (ctrl, rx) = mpsc::channel();
-        let counters = Arc::new(NetCounters::default());
+        let counters = Arc::new(NetCounters {
+            rings: rings.is_some(),
+            ..NetCounters::default()
+        });
         let event_loop = Loop {
             offload,
             counters: Arc::clone(&counters),
