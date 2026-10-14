@@ -234,8 +234,9 @@ ADR 0006).
 ### CLI surface (v0.1)
 
 ```
+vmuc [--json] COMMAND            results as JSON; exit codes by kind of failure (ADR 0010)
 vmuc create   [TEMPLATE|FILE|URL] [--name] [--cpus] [--memory] [--disk] [--mount] [--set yq-like]
-vmuc start    NAME [--timeout] [--foreground]
+vmuc start    NAME [--timeout] [--foreground]   (waits until ready; running already is fine)
 vmuc stop     NAME [--force]     (--force also discards a suspended state)
 vmuc suspend  NAME               save the running instance; `start` or `resume` resumes it
 vmuc resume   NAME [--timeout]   resume a suspended instance (refuses any other)
@@ -243,11 +244,12 @@ vmuc duplicate SOURCE NEW [--cpus] [--memory] [--disk] [--mount] [--set] [--star
                                  copy a stopped instance (ADR 0009)
 vmuc restart  NAME
 vmuc shell    NAME [-- CMD...]   [--workdir]
+vmuc exec     NAME [--workdir] [--tty] -- PROGRAM ARGS...   arguments as given
 vmuc copy     SRC DST            (scp through the tunnel)
-vmuc list     [--format table|json|yaml] [-q]
+vmuc list     [NAME...] [--format table|json] [-q]
 vmuc stat     NAME [--watch]     memory in/out, footprint, reclaim latency, cpu, net
 vmuc delete   NAME [--force]
-vmuc edit     NAME
+vmuc edit     NAME [--set PATH=VALUE] [--cpus] [--memory] [--mount]   (no flags: $EDITOR)
 vmuc info                        versions, kernel, templates, host checks (hv support, macOS version)
 vmuc template list|show NAME
 vmuc prune                       cache
