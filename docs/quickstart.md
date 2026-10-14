@@ -125,6 +125,40 @@ vmuc tui
 `x` stop, `X` force stop, `d` duplicate (asks for the new name), Enter
 shell, `r` reclaim, `c` console pane, `q` quit.
 
+## Scripts and agents
+
+Every command takes `--json` (or `VMUC_JSON=1`): the result is one JSON
+document on stdout, progress stays on stderr, and a failure leaves
+stdout empty and ends stderr with one line, `{"error": {"kind": …,
+"message": …}}`. A command on
+an instance prints it as `vmuc list --json` does (`name`, `status`,
+`addrs`, `cpus`, `memory`, `disk`, `dir`) plus its own fields: `start`
+and `resume` add `ready_seconds`, `resumed` and `was_running`, `suspend`
+`saved_bytes` and `paused_ms`, `duplicate` `source` and `disk_shared`,
+`edit` `changed`.
+
+| Exit code | `kind` | |
+|---|---|---|
+| 0 | | done |
+| 1 | `failed` | anything else |
+| 2 | `invalid` | a bad argument or configuration |
+| 3 | `not_found` | no such instance or template |
+| 4 | `wrong_state` | running, stopped or suspended when the command needs otherwise |
+| 5 | `exists` | the name is taken |
+| 6 | `timed_out` | not ready (or not stopped) in time |
+
+`start` on a running instance waits until it is ready and succeeds, as do
+`stop` on a stopped one and `suspend` on a suspended one; `resume`
+refuses anything not suspended. `vmuc exec NAME -- PROGRAM ARGS…` runs
+a program with its arguments exactly as given, stdin passed through, no
+terminal unless `--tty`, and exits with the program's status (125 when
+vmuc could not run it, 255 when ssh could not reach the guest);
+`vmuc shell NAME -- …` instead hands one command line to the guest's
+shell, as ssh does, so quoting is the shell's. `vmuc edit NAME --set
+cpus=4` (or `--cpus`, `--memory`, `--mount`) edits without an editor.
+These names, fields and codes are kept stable
+([ADR 0010](adr/0010-cli-contract-for-scripts-and-agents.md)).
+
 ## Guest networking
 
 ssh, file sharing and port forwarding all work without a guest network.

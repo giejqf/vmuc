@@ -20,7 +20,8 @@ IPv6, reachable from the host at their own address) through a small
 root helper that relays their frames; `vmuc sudoers` prints how to
 install it, and without it ssh, shares and port forwards still work
 over vsock. Start
-with `docs/quickstart.md`; `docs/benchmarks/README.md` has the numbers
+with `docs/quickstart.md` (scripts and agents: `--json`, exit codes by
+kind, `vmuc exec`); `docs/benchmarks/README.md` has the numbers
 against the targets, `docs/plan.md` the roadmap and
 `docs/feasibility.md` why this works.
 
@@ -35,6 +36,7 @@ vmuc suspend ubuntu       # save it as it is; `resume` brings it back in ~0.2 s
 vmuc resume ubuntu
 vmuc stop ubuntu
 vmuc duplicate ubuntu dev # a second machine like it, disk shared copy-on-write
+vmuc exec ubuntu -- python3 -c 'print(1)'   # arguments as given, the program's exit status
 ```
 
 ## Requirements
