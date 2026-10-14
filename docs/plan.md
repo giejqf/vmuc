@@ -44,7 +44,8 @@ instances, and nothing graphical beyond the terminal.
 | License | Apache-2.0 only; `NOTICE` carries attributions for code ported from ArcBox (MIT OR Apache-2.0) | Requirement |
 | Distribution | Homebrew formula in our own tap, ad-hoc codesign with `vmuc.entitlements` at install; kernel as a formula resource | Lima and QEMU prove it |
 | Suspend | `vmuc suspend` writes a running instance to its directory and ends the VMM; `vmuc start` resumes it with guest RAM mapped copy-on-write from the image; one suspended state per instance, resumed at most once (ADR 0007) | Programs survive and a suspended instance costs no memory; a restore takes ~40 ms (E5) |
-| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots beyond suspend (named snapshots, clones, migration), DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
+| Duplicate | `vmuc duplicate SOURCE NEW` copies a stopped instance: its configuration (without a pinned MAC), its disk cloned copy-on-write, and a new machine ID on the copy's first boot; `vmuc resume` names `start` for a suspended instance (ADR 0009) | A second machine like one already provisioned, in under a second and no space until the disks diverge |
+| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots beyond suspend and duplicate (named snapshots, clones of running instances, migration), DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
 
 ## Repository layout
 
@@ -236,7 +237,10 @@ ADR 0006).
 vmuc create   [TEMPLATE|FILE|URL] [--name] [--cpus] [--memory] [--disk] [--mount] [--set yq-like]
 vmuc start    NAME [--timeout] [--foreground]
 vmuc stop     NAME [--force]     (--force also discards a suspended state)
-vmuc suspend  NAME               save the running instance; `start` resumes it
+vmuc suspend  NAME               save the running instance; `start` or `resume` resumes it
+vmuc resume   NAME [--timeout]   resume a suspended instance (refuses any other)
+vmuc duplicate SOURCE NEW [--cpus] [--memory] [--disk] [--mount] [--set] [--start]
+                                 copy a stopped instance (ADR 0009)
 vmuc restart  NAME
 vmuc shell    NAME [-- CMD...]   [--workdir]
 vmuc copy     SRC DST            (scp through the tunnel)
