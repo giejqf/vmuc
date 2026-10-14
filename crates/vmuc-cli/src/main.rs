@@ -30,7 +30,18 @@ use clap::{Parser, Subcommand, ValueEnum};
 use vmuc_config::{TemplateStore, VmucHome};
 
 #[derive(Parser)]
-#[command(name = "vmuc", version, about = "ARM Linux VMs on Apple silicon")]
+#[command(
+    name = "vmuc",
+    version,
+    about = "ARM Linux VMs on Apple silicon",
+    after_help = "Scripts and agents: --json prints each result as one JSON document on \
+                  stdout, and a failure as {\"error\": {\"kind\", \"message\"}}, the last line \
+                  of stderr. \
+                  Exit codes: 0 ok, 1 failed, 2 invalid, 3 not_found, 4 wrong_state, \
+                  5 exists, 6 timed_out; exec and shell exit with the program's status, \
+                  125 when it did not run. `vmuc exec NAME -- PROGRAM ARGS…` keeps \
+                  arguments as given."
+)]
 struct Cli {
     /// Log filter, e.g. `info` or `vmuc_vmm=debug`.
     #[arg(long, env = "VMUC_LOG", default_value = "warn", global = true)]
@@ -186,8 +197,22 @@ enum Command {
         #[arg(required = true, num_args = 2..)]
         paths: Vec<String>,
     },
-    /// Edit an instance's configuration (checked before it is saved).
-    Edit { name: String },
+    /// Edit an instance's configuration in $EDITOR, or without one with
+    /// --set and the flags below; checked before it is saved.
+    Edit {
+        name: String,
+        #[arg(long)]
+        cpus: Option<u32>,
+        /// e.g. `8GiB`.
+        #[arg(long)]
+        memory: Option<String>,
+        /// `LOCATION[:w]`, may repeat; added to the instance's mounts.
+        #[arg(long)]
+        mount: Vec<String>,
+        /// `path=value`, may repeat: `--set cpus=4`.
+        #[arg(long = "set", value_name = "PATH=VALUE")]
+        set: Vec<String>,
+    },
     /// Remove downloaded images from the cache (instances keep their own
     /// disks; a later create downloads again).
     Prune,
@@ -200,8 +225,23 @@ enum Command {
         /// a share makes it visible in the guest, else the home directory.
         #[arg(long)]
         workdir: Option<String>,
-        /// Command to run instead of a login shell.
+        /// A command line for the guest's shell, instead of a login shell
+        /// (words are joined, as ssh does; see `exec`).
         #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// Run a program in an instance with its arguments exactly as given,
+    /// without a terminal unless asked; exits with the program's status.
+    Exec {
+        name: String,
+        /// Guest directory to run in. Default: as for `shell`.
+        #[arg(long)]
+        workdir: Option<String>,
+        /// Give the program a terminal.
+        #[arg(long, short)]
+        tty: bool,
+        /// The program and its arguments, after `--`.
+        #[arg(last = true, required = true)]
         command: Vec<String>,
     },
     /// List instances.
@@ -330,7 +370,7 @@ enum TemplateCmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let json = cli.json;
-    let program = matches!(cli.command, Command::Shell { .. });
+    let program = matches!(cli.command, Command::Shell { .. } | Command::Exec { .. });
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => exit::report(&e, json, program),
@@ -588,11 +628,52 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             name,
             workdir,
             command,
-        } => lifecycle::shell(&home, &name, workdir.as_deref(), &command)?,
+        } => lifecycle::shell(
+            &home,
+            &name,
+            workdir.as_deref(),
+            &command,
+            lifecycle::Remote::Line,
+        )?,
+        Command::Exec {
+            name,
+            workdir,
+            tty,
+            command,
+        } => lifecycle::shell(
+            &home,
+            &name,
+            workdir.as_deref(),
+            &command,
+            lifecycle::Remote::Argv { tty },
+        )?,
         Command::Stat { name, watch } => stat::run(&home, &name, watch, json)?,
         Command::Tui => tui::run(&home)?,
         Command::Copy { recursive, paths } => copy::run(&home, recursive, &paths)?,
-        Command::Edit { name } => instance::edit(&home, &name)?,
+        Command::Edit {
+            name,
+            cpus,
+            memory,
+            mount,
+            set,
+        } => {
+            let o = instance::CreateOverrides {
+                cpus,
+                memory,
+                disk: None,
+                mounts: mount,
+                set,
+            };
+            let flags = o.cpus.is_some() || o.memory.is_some() || !o.mounts.is_empty();
+            if flags || !o.set.is_empty() {
+                let changed = instance::edit_with(&home, &name, &o)?;
+                if json {
+                    exit::print_instance(&home, &name, serde_json::json!({ "changed": changed }))?;
+                }
+            } else {
+                instance::edit(&home, &name)?;
+            }
+        }
         Command::Prune => {
             let pruned = vmuc_image::Cache::open_default()?.prune()?;
             let total: u64 = pruned.iter().map(|p| p.bytes).sum();

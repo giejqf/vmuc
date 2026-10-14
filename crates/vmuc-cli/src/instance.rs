@@ -4,7 +4,7 @@
 //! parameters a VMM or the QEMU harness needs.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -214,17 +214,25 @@ pub fn prepare_disk(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Resul
         _ => (None, None),
     };
     eprintln!("fetching {}", image.location);
+    // A terminal gets one line rewritten, a log a whole line per 512 MiB.
+    let tty = io::stderr().is_terminal();
+    let step: u64 = if tty { 64 << 20 } else { 512 << 20 };
     let mut shown = 0u64;
     let path = cache.fetch(&image.location, sha256.as_ref(), |done, total| {
-        if done / (64 << 20) > shown {
-            shown = done / (64 << 20);
-            match total {
-                Some(t) => eprint!("\r  {} / {} MiB", done >> 20, t >> 20),
-                None => eprint!("\r  {} MiB", done >> 20),
+        if done / step > shown {
+            shown = done / step;
+            let at = match total {
+                Some(t) => format!("  {} / {} MiB", done >> 20, t >> 20),
+                None => format!("  {} MiB", done >> 20),
+            };
+            if tty {
+                eprint!("\r{at}");
+            } else {
+                eprintln!("{at}");
             }
         }
     })?;
-    if shown > 0 {
+    if shown > 0 && tty {
         eprintln!();
     }
     if let Some(want) = sha512 {
@@ -405,8 +413,54 @@ pub fn boot_info(inst: &Instance, resolved: &ResolvedConfig) -> anyhow::Result<B
 /// `vmuc edit`: the instance's config in `$VISUAL`/`$EDITOR` (else `vi`),
 /// checked before it replaces the original. An edit that does not check
 /// out is kept beside it, and the next `vmuc edit` reopens it.
+/// `vmuc edit NAME --set …` and the other flags: the change without an
+/// editor, checked as an edit is. Returns whether anything changed.
+pub fn edit_with(home: &VmucHome, name: &str, o: &CreateOverrides) -> anyhow::Result<bool> {
+    let inst = Instance::open(home, name)?;
+    let path = inst.dir.join(files::CONFIG);
+    let original = fs::read_to_string(&path).with_context(|| path.display().to_string())?;
+    let before = inst.config()?;
+    let mut cfg = before.clone();
+    apply_overrides(&mut cfg, o)?;
+    if !o.set.is_empty() {
+        cfg = cfg.with_assignments(&o.set)?;
+    }
+    let changed = cfg != before
+        && apply_edit(
+            home,
+            &inst,
+            Path::new("the edit"),
+            &original,
+            &cfg.to_yaml()?,
+        )?;
+    edit_note(&inst, changed);
+    Ok(changed)
+}
+
+/// What an edit means for an instance that is not stopped.
+fn edit_note(inst: &Instance, changed: bool) {
+    let name = &inst.name;
+    if !changed {
+        eprintln!("no changes");
+    } else if crate::state::running_pid(&inst.dir).is_some() {
+        eprintln!("{name} is running; the change applies at its next start");
+    } else if crate::suspend::exists(&inst.dir) {
+        eprintln!(
+            "{name} is suspended: a change to its CPUs, memory, network or shares \
+             keeps it from resuming until reverted, and others apply at its next boot"
+        );
+    }
+}
+
 pub fn edit(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     let inst = Instance::open(home, name)?;
+    if !io::stdin().is_terminal() {
+        fail!(
+            Kind::Invalid,
+            "`vmuc edit {name}` opens an editor and needs a terminal; \
+             --set PATH=VALUE (or --cpus, --memory, --mount) edits without one"
+        );
+    }
     let path = inst.dir.join(files::CONFIG);
     let original = fs::read_to_string(&path).with_context(|| path.display().to_string())?;
     let draft = open_draft(&inst.dir, &original)?;
@@ -432,16 +486,7 @@ pub fn edit(home: &VmucHome, name: &str) -> anyhow::Result<()> {
     match apply_edit(home, &inst, &draft, &original, &edited) {
         Ok(changed) => {
             let _ = fs::remove_file(&draft);
-            if !changed {
-                eprintln!("no changes");
-            } else if crate::state::running_pid(&inst.dir).is_some() {
-                eprintln!("{name} is running; the change applies at its next start");
-            } else if crate::suspend::exists(&inst.dir) {
-                eprintln!(
-                    "{name} is suspended: a change to its CPUs, memory, network or shares \
-                     keeps it from resuming until reverted, and others apply at its next boot"
-                );
-            }
+            edit_note(&inst, changed);
             Ok(())
         }
         Err(e) => bail!(
@@ -609,6 +654,45 @@ mod tests {
         assert_eq!(
             fs::read_to_string(inst_dir.join(files::CONFIG)).unwrap(),
             good
+        );
+    }
+
+    #[test]
+    fn flags_edit_without_an_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = VmucHome::new(dir.path());
+        let inst_dir = dir.path().join("dev");
+        fs::create_dir_all(&inst_dir).unwrap();
+        let original = "images:\n- location: https://example.com/x.img\ncpus: 2\n";
+        fs::write(inst_dir.join(files::CONFIG), original).unwrap();
+        let same = CreateOverrides {
+            cpus: Some(2),
+            ..CreateOverrides::default()
+        };
+        assert!(!edit_with(&home, "dev", &same).unwrap(), "no change");
+        assert_eq!(
+            fs::read_to_string(inst_dir.join(files::CONFIG)).unwrap(),
+            original
+        );
+        let more = CreateOverrides {
+            memory: Some("8GiB".into()),
+            set: vec!["cpus=6".into()],
+            ..CreateOverrides::default()
+        };
+        assert!(edit_with(&home, "dev", &more).unwrap());
+        let cfg = Instance::open(&home, "dev").unwrap().config().unwrap();
+        assert_eq!(cfg.cpus, Some(6));
+        assert_eq!(cfg.memory.map(|m| m.to_string()).as_deref(), Some("8GiB"));
+        let bad = CreateOverrides {
+            set: vec!["cpus=lots".into()],
+            ..CreateOverrides::default()
+        };
+        let err = edit_with(&home, "dev", &bad).unwrap_err();
+        assert_eq!(crate::exit::Kind::of(&err), crate::exit::Kind::Invalid);
+        assert_eq!(
+            Instance::open(&home, "dev").unwrap().config().unwrap().cpus,
+            Some(6),
+            "a bad edit changes nothing"
         );
     }
 

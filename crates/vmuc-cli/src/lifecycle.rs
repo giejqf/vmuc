@@ -394,11 +394,23 @@ pub fn not_running(inst: &Instance) -> anyhow::Error {
 /// Replaces this process with `ssh` into the instance, starting in
 /// `workdir` (a guest path) or, by default, wherever the current host
 /// directory appears in the guest through a share.
+/// How `shell` and `exec` hand their command to the guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remote {
+    /// `shell`: the words as one line for the remote shell, as ssh does;
+    /// a terminal when stdin is one.
+    Line,
+    /// `exec`: each argument quoted, so the program gets them as given;
+    /// a terminal only when asked.
+    Argv { tty: bool },
+}
+
 pub fn shell(
     home: &VmucHome,
     name: &str,
     workdir: Option<&str>,
     command: &[String],
+    how: Remote,
 ) -> anyhow::Result<()> {
     let inst = Instance::open(home, name)?;
     if state::running_pid(&inst.dir).is_none() {
@@ -412,10 +424,17 @@ pub fn shell(
     };
     let mut cmd = Command::new("ssh");
     cmd.arg("-F").arg(inst.dir.join(files::SSH_CONFIG));
-    let remote = remote_command(workdir, mapped.as_deref(), command);
-    if remote.is_some() && atty_stdin() {
-        cmd.arg("-t");
-    }
+    let words = match how {
+        Remote::Line => command.to_vec(),
+        Remote::Argv { .. } => vec![argv_line(command)],
+    };
+    let remote = remote_command(workdir, mapped.as_deref(), &words);
+    match how {
+        Remote::Line if remote.is_some() && atty_stdin() => cmd.arg("-t"),
+        Remote::Argv { tty: true } => cmd.arg("-t"),
+        Remote::Argv { tty: false } => cmd.arg("-T"),
+        Remote::Line => &mut cmd,
+    };
     cmd.arg(ssh_host(name));
     if let Some(remote) = remote {
         cmd.arg("--").arg(remote);
@@ -459,6 +478,15 @@ fn guest_path(
         })
         .max_by_key(|(depth, _)| *depth)
         .map(|(_, p)| p.display().to_string())
+}
+
+/// `exec`'s arguments as one remote command line that gives them back
+/// unchanged.
+fn argv_line(argv: &[String]) -> String {
+    argv.iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn shell_quote(s: &str) -> String {
@@ -510,6 +538,24 @@ mod tests {
         assert_eq!(
             remote_command(None, Some("/src/it's"), &cmd(&["make"])).as_deref(),
             Some("cd '/src/it'\\''s' 2>/dev/null; make")
+        );
+    }
+
+    #[test]
+    fn exec_arguments_reach_the_program_as_given() {
+        let argv: Vec<String> = ["python3", "-c", "print('a b')", "$HOME", ""]
+            .map(str::to_owned)
+            .to_vec();
+        let line = argv_line(&argv);
+        assert_eq!(line, r"'python3' '-c' 'print('\''a b'\'')' '$HOME' ''");
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf '[%s]' {line}"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "[python3][-c][print('a b')][$HOME][]"
         );
     }
 
