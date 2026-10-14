@@ -1,6 +1,6 @@
 [package]
 name = "vmuc-net"
-description = "User-space NAT datapath, DHCP/DNS, vmnet helper client, port forwarder"
+description = "The vmnet relay helper, its shared-memory rings, and the VMM side of starting it"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

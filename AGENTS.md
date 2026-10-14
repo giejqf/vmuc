@@ -27,8 +27,10 @@ change; propose it in `docs/adr/` first.
    released to the host with the unmap/refresh/remap sequence; host
    pressure is answered; every byte is accounted for in `vmuc stat`.
 4. Hypervisor.framework only. No Virtualization.framework, no QEMU, no
-   libkrun, no vmnet, no crate that wraps any of them. Our own
-   hypervisor bindings, VMM, virtqueues, devices, NAT, and virtiofs.
+   libkrun, no crate that wraps any of them or vmnet. vmnet is called
+   only from the root helper, which relays frames and does nothing else
+   (see macOS specifics). Our own hypervisor bindings, VMM, virtqueues,
+   devices, virtiofs, and (v0.2) user-space NAT.
 5. No graphics devices, no framebuffer, no GPU.
 6. Performance and efficiency win ties. Idle must cost nothing
    measurable; hot paths are custom and benchmarked.
@@ -44,7 +46,7 @@ crates/vmuc-hv       Hypervisor.framework FFI (hand-written) + safe wrappers; st
 crates/vmuc-vmm      VM lifecycle, guest RAM + memory manager, vCPU loop, PSCI, GIC wiring, FDT, PL011/PL031
 crates/vmuc-virtio   virtqueue, mmio transport, device models (console, blk, net, vsock, rng, balloon, fs)
 crates/vmuc-fs       virtiofs server (FUSE protocol, passthrough)
-crates/vmuc-net      user-space NAT, DHCP/DNS, port forwarder
+crates/vmuc-net      vmnet relay helper (the one root process), shared-memory rings, helper launch; user-space NAT in v0.2
 crates/vmuc-image    downloads, cache, qcow2 → raw, GPT, ISO9660, sparse files
 crates/vmuc-config   YAML schema, layering, templates
 crates/vmuc-proto    CLI↔VMM and host↔agent message types
