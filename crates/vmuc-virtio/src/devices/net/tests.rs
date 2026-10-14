@@ -255,10 +255,14 @@ mod with_rings {
     }
 
     fn ring_rig() -> RingRig {
+        ring_rig_sized(16)
+    }
+
+    fn ring_rig_sized(queue: u16) -> RingRig {
         let region = Arc::new(Region::anonymous(REGION_BYTES).unwrap());
         let (ours, peer) = UnixDatagram::pair().unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut ds = Driver::many(2, 16, true);
+        let mut ds = Driver::many(2, queue, true);
         let tx = ds.pop().unwrap();
         let rx = ds.pop().unwrap();
         let mut net = Net::new(MAC, ours, true, Some(&region)).unwrap();
@@ -355,6 +359,38 @@ mod with_rings {
         while r.tx.avail_event() != 10 {
             assert!(t.elapsed() < Duration::from_secs(5), "kicks not re-armed");
             std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn half_the_ring_is_published_while_the_helper_holds_the_rest() {
+        let mut r = ring_rig_sized(64);
+        // More than half the ring's worth, all of which fits in it.
+        let (frames, len) = (40u16, 60_000);
+        let mut f = hdr(0, 0).to_vec();
+        f.extend(frame(len));
+        let b = r.tx.buffer(&f, f.len() as u32);
+        for _ in 0..frames {
+            r.tx.post(&[(b, f.len() as u32, false)]);
+        }
+        r.net.doorbell().ring(1);
+        wait_used(&r.tx, frames);
+        // The helper takes what is published, releasing nothing yet.
+        let mut first = 0;
+        while let Next::Frame { len, .. } = r.from_vmm.peek() {
+            assert_eq!(len, f.len());
+            r.from_vmm.advance();
+            first += 1;
+        }
+        let half = vmuc_net::ring::DATA / 2 / f.len();
+        assert!(
+            (half..usize::from(frames)).contains(&first),
+            "{first} of {frames} published at once"
+        );
+        // Once it lets go, the rest follows.
+        r.from_vmm.release();
+        for _ in first..usize::from(frames) {
+            assert_eq!(take(&mut r.from_vmm), f);
         }
     }
 

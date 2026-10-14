@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use vmuc_net::handoff;
 use vmuc_net::region::Region;
-use vmuc_net::ring::{Consumer, Direction, MAX_FRAME, Next, Producer};
+use vmuc_net::ring::{Consumer, DATA, Direction, MAX_FRAME, Next, Producer};
 
 use super::{Delivery, HDR_LEN, Loop, RX, TX, deliver, offload};
 use crate::devices::Segments;
@@ -30,6 +30,13 @@ const TX_POLL: Duration = if cfg!(test) {
     Duration::from_micros(50)
 };
 
+/// Publishing stops while the helper holds this much of its ring: it
+/// takes everything published into one `vmnet_write` (up to 64 frames, a
+/// whole ring of 64 KiB frames) and frees none of it before the call
+/// returns. Frames copied meanwhile wait in the other half, published as
+/// soon as it lets go: one half written out while the other fills.
+const HALF: u64 = (DATA / 2) as u64;
+
 pub(super) struct Rings {
     tx: Producer,
     rx: Consumer,
@@ -41,6 +48,19 @@ pub(super) struct Rings {
 }
 
 impl Rings {
+    /// Publishes the frames copied, unless the helper is busy with half
+    /// the ring (see [`HALF`]); kicks it when it sleeps.
+    fn publish_tx(&mut self, socket: i32) {
+        if self.tx.unreleased() < HALF && self.tx.publish() {
+            handoff::kick(socket);
+        }
+    }
+
+    /// Copied frames wait to be published.
+    pub(super) fn tx_holding(&self) -> bool {
+        self.tx.holding()
+    }
+
     pub(super) fn new(region: &Arc<Region>) -> Self {
         Self {
             tx: Producer::new(Arc::clone(region), Direction::ToHelper),
@@ -115,9 +135,7 @@ impl Loop {
             }
             let Some(slot) = rings.tx.reserve(len) else {
                 // Let the helper drain what is there, then wait for room.
-                if rings.tx.publish() {
-                    handoff::kick(socket);
-                }
+                rings.publish_tx(socket);
                 self.tx_pending = Some(chain);
                 if rings.tx.prepare_wait(len) {
                     break;
@@ -129,13 +147,12 @@ impl Loop {
             let dst = unsafe { std::slice::from_raw_parts_mut(slot.data(), len) };
             let n = frame.read_into(&mem, dst).unwrap_or(0);
             rings.tx.commit(&slot, n);
+            rings.publish_tx(socket);
             let hdr = if self.offload { HDR_LEN } else { 0 };
             self.counters.sent(n.saturating_sub(hdr));
             let _ = ctx.queues[TX].add_used(&mem, chain.head, 0);
         }
-        if rings.tx.publish() {
-            handoff::kick(socket);
-        }
+        rings.publish_tx(socket);
         let _ = ctx.queues[TX].publish_used(&mem);
         if ctx.queues[TX].needs_interrupt(&mem).unwrap_or(true) {
             ctx.irq.signal_used();

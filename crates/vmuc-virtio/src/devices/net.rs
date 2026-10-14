@@ -128,7 +128,8 @@ impl Loop {
     fn run(mut self) {
         let mut events = Events::with_capacity(16);
         loop {
-            let polling = self.tx_poll_until.is_some();
+            let polling = self.tx_poll_until.is_some()
+                || self.rings.as_ref().is_some_and(rings::Rings::tx_holding);
             let timeout = (polling || !self.may_sleep()).then_some(std::time::Duration::ZERO);
             if let Err(e) = self.poll.poll(&mut events, timeout) {
                 if e.kind() == io::ErrorKind::Interrupted {

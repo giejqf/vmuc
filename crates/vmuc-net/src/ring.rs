@@ -237,6 +237,19 @@ impl Producer {
         unsafe { word32(self.base, CONSUMER_SLEEPING) }.swap(0, Ordering::SeqCst) != 0
     }
 
+    /// Published bytes the consumer has not released yet.
+    pub fn unreleased(&self) -> u64 {
+        // SAFETY: control offsets of a ring base.
+        let tail = unsafe { word64(self.base, TAIL) }.load(Ordering::Acquire);
+        // The consumer owns `tail`; one out of range counts as nothing.
+        self.published.saturating_sub(tail)
+    }
+
+    /// Whether records are committed but not yet published.
+    pub fn holding(&self) -> bool {
+        self.committed != self.published
+    }
+
     /// Forgets uncommitted reservations.
     pub fn abandon(&mut self) {
         self.cursor = self.committed;
