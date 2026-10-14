@@ -30,9 +30,11 @@ vmuc create ubuntu        # download, verify and convert the cloud image
 vmuc start ubuntu         # boot; returns when ssh works
 vmuc shell ubuntu         # or: vmuc shell ubuntu -- uname -a
 vmuc stat ubuntu          # host footprint, guest memory, bytes handed back
-vmuc tui                  # every instance, live, with start/stop/shell keys
-vmuc suspend ubuntu       # save it as it is; `start` resumes it in ~0.2 s
+vmuc tui                  # every instance, live, with start/stop/suspend/shell keys
+vmuc suspend ubuntu       # save it as it is; `resume` brings it back in ~0.2 s
+vmuc resume ubuntu
 vmuc stop ubuntu
+vmuc duplicate ubuntu dev # a second machine like it, disk shared copy-on-write
 ```
 
 ## Requirements
