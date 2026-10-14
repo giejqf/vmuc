@@ -111,6 +111,18 @@ impl Source for Local {
                 self.background(&["start", name]);
                 format!("starting {name}…")
             }
+            Action::Resume => {
+                self.background(&["resume", name]);
+                format!("resuming {name}…")
+            }
+            Action::Suspend => {
+                self.background(&["suspend", name]);
+                format!("suspending {name}…")
+            }
+            Action::Duplicate(copy) => {
+                self.background(&["duplicate", name, &copy]);
+                format!("duplicating {name} as {copy}…")
+            }
             Action::Stop => {
                 self.background(&["stop", name]);
                 format!("stopping {name}…")

@@ -30,20 +30,26 @@ pub struct Live {
 }
 
 /// What a key asks the source to do to the selected instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Start,
+    /// Bring a suspended instance back as it was.
+    Resume,
+    /// Save a running instance and end its VM.
+    Suspend,
     Stop,
     ForceStop,
     /// Drop guest caches so free page reporting can hand memory back.
     Reclaim,
     /// An interactive shell; the TUI gives up the terminal meanwhile.
     Shell,
+    /// Copy the stopped instance as a new one of this name.
+    Duplicate(String),
 }
 
 impl Action {
-    pub fn needs_terminal(self) -> bool {
-        self == Self::Shell
+    pub fn needs_terminal(&self) -> bool {
+        matches!(self, Self::Shell)
     }
 }
 

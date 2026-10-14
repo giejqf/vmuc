@@ -34,7 +34,17 @@ pub fn draw(f: &mut Frame, app: &App, console: &[String]) {
     } else {
         draw_detail(f, below, app);
     }
-    f.render_widget(Paragraph::new(app.status_line.as_str()).dim(), status);
+    match &app.prompt {
+        Some(p) => f.render_widget(
+            Paragraph::new(Line::from(vec![
+                format!("duplicate {} as: ", p.source).into(),
+                p.name.clone().bold(),
+                "▏  ⏎ duplicate · esc cancel".dim(),
+            ])),
+            status,
+        ),
+        None => f.render_widget(Paragraph::new(app.status_line.as_str()).dim(), status),
+    }
 }
 
 fn draw_list(f: &mut Frame, area: Rect, app: &App) {
@@ -208,7 +218,14 @@ fn idle_lines(inst: &Instance) -> Vec<Line<'static>> {
             inst.cpus, inst.memory, inst.disk
         )),
         Line::from(""),
-        Line::from("s to start".dim()),
+        Line::from(
+            if inst.status == "Suspended" {
+                "s to resume · X discards the saved state"
+            } else {
+                "s to start · d to duplicate"
+            }
+            .dim(),
+        ),
     ]
 }
 

@@ -117,6 +117,29 @@ fn a_stopped_selection_says_how_to_start_it() {
 }
 
 #[test]
+fn a_suspended_selection_says_how_to_resume_it() {
+    let mut app = App::new();
+    let mut inst = stopped("saved");
+    inst.status = "Suspended".into();
+    app.refresh(vec![inst], Duration::ZERO);
+    let screen = render(&app, &[], 100, 20);
+    assert!(screen.contains("s to resume"), "{screen}");
+}
+
+#[test]
+fn the_duplicate_prompt_takes_the_status_line() {
+    let mut app = App::new();
+    app.refresh(vec![stopped("old")], Duration::ZERO);
+    app.key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char('d'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ));
+    let screen = render(&app, &[], 100, 20);
+    assert!(screen.contains("duplicate old as: old-2"), "{screen}");
+    assert!(!screen.contains("q quit"), "{screen}");
+}
+
+#[test]
 fn empty_and_tiny_screens_render() {
     let app = App::new();
     assert!(render(&app, &[], 80, 20).contains("vmuc create ubuntu"));

@@ -19,6 +19,13 @@ pub enum Command {
     Act(String, Action),
 }
 
+/// The name being typed for a duplicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    pub source: String,
+    pub name: String,
+}
+
 #[derive(Debug, Default)]
 pub struct App {
     pub instances: Vec<Instance>,
@@ -26,14 +33,16 @@ pub struct App {
     pub histories: HashMap<String, History>,
     pub status_line: String,
     pub show_console: bool,
+    /// While set, keys edit the duplicate's name.
+    pub prompt: Option<Prompt>,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
             show_console: true,
-            status_line: "↑↓ select · s start · x stop · X force stop · ⏎ shell · r reclaim · \
-                          c console · q quit"
+            status_line: "↑↓ select · s start/resume · z suspend · x stop · X force stop · \
+                          d duplicate · ⏎ shell · r reclaim · c console · q quit"
                 .into(),
             ..Self::default()
         }
@@ -69,14 +78,31 @@ impl App {
     }
 
     pub fn key(&mut self, k: KeyEvent) -> Command {
+        if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            return Command::Quit;
+        }
+        if self.prompt.is_some() {
+            return self.prompt_key(k);
+        }
+        let suspended = self
+            .selected_instance()
+            .is_some_and(|i| i.status == "Suspended");
         let act = |a| {
             self.selected_name()
                 .map_or(Command::None, |n| Command::Act(n.to_owned(), a))
         };
         match (k.code, k.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL)
-            | (KeyCode::Char('q') | KeyCode::Esc, _) => Command::Quit,
+            (KeyCode::Char('q') | KeyCode::Esc, _) => Command::Quit,
+            (KeyCode::Char('s'), _) if suspended => act(Action::Resume),
             (KeyCode::Char('s'), _) => act(Action::Start),
+            (KeyCode::Char('z'), _) => act(Action::Suspend),
+            (KeyCode::Char('d'), _) => {
+                if let Some(source) = self.selected_name().map(str::to_owned) {
+                    let name = self.free_name(&source);
+                    self.prompt = Some(Prompt { source, name });
+                }
+                Command::None
+            }
             (KeyCode::Char('x'), _) => act(Action::Stop),
             (KeyCode::Char('X'), _) => act(Action::ForceStop),
             (KeyCode::Char('r'), _) => act(Action::Reclaim),
@@ -95,6 +121,35 @@ impl App {
             }
             _ => Command::None,
         }
+    }
+
+    /// Editing the duplicate's name: letters, digits, `-`, `_` and `.`.
+    fn prompt_key(&mut self, k: KeyEvent) -> Command {
+        let Some(p) = self.prompt.as_mut() else {
+            return Command::None;
+        };
+        match k.code {
+            KeyCode::Esc => self.prompt = None,
+            KeyCode::Enter if !p.name.is_empty() => {
+                let p = self.prompt.take().expect("prompting");
+                return Command::Act(p.source, Action::Duplicate(p.name));
+            }
+            KeyCode::Backspace => {
+                p.name.pop();
+            }
+            KeyCode::Char(c) if c.is_ascii_alphanumeric() || "-_.".contains(c) => p.name.push(c),
+            _ => {}
+        }
+        Command::None
+    }
+
+    /// `SOURCE-2`, or the first of `-3`, `-4`, … no instance has; among
+    /// n + 1 suffixes one is free.
+    fn free_name(&self, source: &str) -> String {
+        (2..=self.instances.len() + 2)
+            .map(|i| format!("{source}-{i}"))
+            .find(|n| !self.instances.iter().any(|i| &i.name == n))
+            .expect("n instances take at most n names")
     }
 }
 
@@ -153,6 +208,65 @@ mod tests {
             Command::None,
             "nothing to act on"
         );
+    }
+
+    #[test]
+    fn s_resumes_a_suspended_instance_and_z_suspends() {
+        let mut app = App::new();
+        let mut a = inst("a", false);
+        a.status = "Suspended".into();
+        app.refresh(vec![a, inst("b", true)], Duration::ZERO);
+        assert_eq!(
+            app.key(key(KeyCode::Char('s'))),
+            Command::Act("a".into(), Action::Resume)
+        );
+        app.key(key(KeyCode::Down));
+        assert_eq!(
+            app.key(key(KeyCode::Char('s'))),
+            Command::Act("b".into(), Action::Start)
+        );
+        assert_eq!(
+            app.key(key(KeyCode::Char('z'))),
+            Command::Act("b".into(), Action::Suspend)
+        );
+    }
+
+    #[test]
+    fn d_asks_for_the_duplicate_name() {
+        let mut app = App::new();
+        app.refresh(vec![inst("a", false), inst("a-2", false)], Duration::ZERO);
+        assert_eq!(app.key(key(KeyCode::Char('d'))), Command::None);
+        let p = app.prompt.clone().unwrap();
+        assert_eq!((p.source.as_str(), p.name.as_str()), ("a", "a-3"));
+        app.key(key(KeyCode::Backspace));
+        for c in "x y!".chars() {
+            app.key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            app.prompt.as_ref().unwrap().name,
+            "a-xy",
+            "no spaces or `!`"
+        );
+        assert_eq!(
+            app.key(key(KeyCode::Char('q'))),
+            Command::None,
+            "q is a letter here"
+        );
+        assert_eq!(
+            app.key(key(KeyCode::Enter)),
+            Command::Act("a".into(), Action::Duplicate("a-xyq".into()))
+        );
+        assert_eq!(app.prompt, None);
+
+        app.key(key(KeyCode::Char('d')));
+        assert_eq!(app.key(key(KeyCode::Esc)), Command::None, "esc cancels");
+        assert_eq!(app.prompt, None);
+        app.key(key(KeyCode::Char('d')));
+        for _ in 0..5 {
+            app.key(key(KeyCode::Backspace));
+        }
+        assert_eq!(app.key(key(KeyCode::Enter)), Command::None, "no empty name");
+        assert!(app.prompt.is_some());
     }
 
     #[test]
