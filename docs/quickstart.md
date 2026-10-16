@@ -4,19 +4,20 @@ vmuc runs arm64 Linux VMs on Apple silicon Macs (macOS 15 or newer).
 
 ## Install
 
-From a release, once one is published:
-
 ```
 brew install giejqf/vmuc/vmuc
 ```
 
-From source (Rust stable, with the `aarch64-unknown-linux-musl` target
-for the guest agent):
+The formula builds vmuc from source, signs it with the hypervisor
+entitlement (an ad-hoc signature is enough), and installs the guest
+kernel and agent from the release. From a checkout instead (Rust stable,
+with the `aarch64-unknown-linux-musl` target for the guest agent):
 
 ```
 rustup target add aarch64-unknown-linux-musl
 make agent                                   # static guest agent
-# guest kernel: download the `kernel` workflow artifact into guest/kernel/out/
+mkdir -p guest/kernel/out                    # guest kernel: build it (make kernel, on Linux) or
+gh release download v0.1.0 -R giejqf/vmuc -p 'vmuc-kernel-*' -O guest/kernel/out/Image
 cargo build --release -p vmuc-cli
 make sign                                    # ad-hoc sign with the hypervisor entitlement
 ```

@@ -390,9 +390,9 @@ machine is required.
 ### M9 — Release engineering (1–2 weeks)
 
 - Tap repository and formula, kernel resource, bottle build on a
-  self-hosted runner, `vmuc info` self-check. *Decided 2026-10-12: the
-  Homebrew release waits for 0.2.0; the formula, its render script and
-  the release workflow are in the tree, the tap is not created yet.*
+  self-hosted runner, `vmuc info` self-check. *Decided 2026-10-12 that the
+  Homebrew release would wait for 0.2.0; on 2026-10-16 the user chose to
+  release 0.1.0 to the tap (`giejqf/homebrew-vmuc`) after all.*
 - Release workflow: tag → Linux job builds kernel + agent assets → Mac
   job builds, signs, tests → GitHub release draft stays draft until
   assets exist (ArcBox's ordering lesson).
