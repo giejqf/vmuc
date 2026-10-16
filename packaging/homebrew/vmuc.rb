@@ -10,9 +10,9 @@ class Vmuc < Formula
   license "Apache-2.0"
   head "https://github.com/giejqf/vmuc.git", branch: "main"
 
+  depends_on "rust" => :build
   depends_on arch: :arm64
   depends_on macos: :sequoia
-  depends_on "rust" => :build
 
   # Built on Linux by the release workflow (the kernel passes a QEMU boot
   # test there) and pinned here, so an install is reproducible and works
