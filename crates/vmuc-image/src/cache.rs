@@ -469,7 +469,16 @@ mod tests {
         assert!(!cache.entry_dir(&file_url(&a)).exists());
         assert!(cache.entry_dir(&file_url(&b)).exists());
         drop(busy);
-        assert_eq!(cache.prune().unwrap().len(), 1);
+        // A test running beside this one may have forked while `busy` was
+        // open: on Linux its child holds the descriptor, and with it the
+        // flock, until it execs. So the lock is released soon, not at once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut pruned = cache.prune().unwrap();
+        while pruned.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            pruned = cache.prune().unwrap();
+        }
+        assert_eq!(pruned.len(), 1);
     }
 
     #[test]
