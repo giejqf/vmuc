@@ -1728,7 +1728,7 @@ checksum = "7e21282841a059bb62627ce8441c491f09603622cd5a21c43bfedc85a2952f23"
 
 [[package]]
 name = "vmuc-agent"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-cli"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1766,7 +1766,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-config"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "dirs",
  "indexmap",
@@ -1781,7 +1781,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-e2e"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-fs"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "libc",
  "serde",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-hv"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "libc",
  "thiserror",
@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-image"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-net"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "libc",
  "serde",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-proto"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1848,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-tui"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "ratatui",
  "vmuc-proto",
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-virtio"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "libc",
  "mio",
@@ -1872,7 +1872,7 @@ dependencies = [
 
 [[package]]
 name = "vmuc-vmm"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "libc",
  "serde",
