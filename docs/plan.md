@@ -28,8 +28,8 @@ instances, and nothing graphical beyond the terminal.
 | Virtio | virtio-mmio transport, split queues, own device models: console, blk, net, vsock, fs, rng, balloon | PCI buys nothing without graphics or passthrough; mmio is what ArcBox, libkrun, Firecracker use |
 | Memory | Ledger-tagged 128 KiB granules lazily populated, mapped once; free page reporting + unmap/fresh granules/remap release on a dedicated thread; host pressure responder that drops guest caches; no host-driven balloon targets | See `feasibility.md` requirement 3; plain anonymous memory is billed twice for pages host and guest share (ADR 0003); balloon targets never beat dropping caches (ADR 0004) |
 | Guest page size | 4 KiB | 16 KiB costs 14–31 % more memory at idle for ~11 % more speed; compatibility was fine (E3) |
-| Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). The user-space NAT stack moves to v0.2 as the sudo-free fallback | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames |
-| Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Faster than through the NAT; no ssh child processes |
+| Networking | Apple vmnet.framework through a small root helper (`vmuc-vmnet-helper`, one-time sudoers install like Lima's `socket_vmnet`): **shared** mode by default (guest gets a host-reachable 192.168.64.x address, macOS does DHCP and NAT), **bridged** mode optional (`network.mode: bridged`, `interface: en0`). No user-space NAT: without the helper an instance has no NIC, and ssh, file sharing and port forwarding still work over vsock (ADR 0011) | The host must reach the guest by IP (requirement added 2026-10-10); unprivileged vmnet needs the restricted `com.apple.vm.networking` entitlement, so the privileged part is isolated in a helper that only relays frames; a NAT would add outbound access only, slower, for a TCP/IP stack's worth of code |
+| Port forwarding | Over vsock via the guest agent; dynamic from guest listening sockets plus static rules | Works without the helper; no ssh child processes |
 | Shell | System `ssh` with `ProxyCommand vmuc _proxy <inst> 22` through a vsock tunnel; `ssh.config` written per instance | No host TCP port, works with any sshd, IDE-friendly |
 | File sharing | Own virtiofs (FUSE-over-virtqueue passthrough); DAX per share, opt-in (`mounts[].dax`); host changes in writable shares replayed to guest watchers by the guest kernel | Only option without Apple devices; DAX takes shared-file reads out of the VM's memory but runs file faults on vCPUs (ADR 0005); virtiofs cannot report host changes, and a replay from inside the guest without the kernel gets only edits through (ADR 0006) |
 | Process model | One binary `vmuc`; `vmuc start` spawns detached `vmuc _vmm <name>`; one VM per process | HV allows one VM per process; the entitled binary must own the VM |
@@ -45,7 +45,7 @@ instances, and nothing graphical beyond the terminal.
 | Distribution | Homebrew formula in our own tap, ad-hoc codesign with `vmuc.entitlements` at install; kernel as a formula resource | Lima and QEMU prove it |
 | Suspend | `vmuc suspend` writes a running instance to its directory and ends the VMM; `vmuc start` resumes it with guest RAM mapped copy-on-write from the image; one suspended state per instance, resumed at most once (ADR 0007) | Programs survive and a suspended instance costs no memory; a restore takes ~40 ms (E5) |
 | Duplicate | `vmuc duplicate SOURCE NEW` copies a stopped instance: its configuration (without a pinned MAC), its disk cloned copy-on-write, and a new machine ID on the copy's first boot; `vmuc resume` names `start` for a suspended instance (ADR 0009) | A second machine like one already provisioned, in under a second and no space until the disks diverge |
-| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, user-space NAT (sudo-free networking), snapshots beyond suspend and duplicate (named snapshots, clones of running instances, migration), DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
+| Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, snapshots beyond suspend and duplicate (named snapshots, clones of running instances, migration), DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
 
 ## Repository layout
 
@@ -215,9 +215,9 @@ tracepoint where available). The host applies `port_forwards` rules
 ignore, static) and opens loopback listeners; each accepted connection
 opens a vsock connection to the agent, which dials the guest socket.
 
-The user-space NAT (ARP/DHCP/DNS/ICMP/UDP proxy, TCP
-terminate-and-splice) is v0.2 work and becomes the no-sudo fallback;
-its design is unchanged from the feasibility study.
+There is no user-space NAT (ADR 0011). The one studied in
+feasibility.md would have been a sudo-free fallback with outbound
+access only.
 
 ### Control and agent protocol (`vmuc-proto`)
 

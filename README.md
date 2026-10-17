@@ -73,9 +73,9 @@ with its arguments exactly as given and exits with its status
 
 ## Status
 
-0.1.0 is the first release. Not there yet: networking without the root
-helper (a user-space NAT is planned for 0.2) and named snapshots. Not
-planned: x86 guests, macOS guests, a GUI.
+0.1.0 is the first release. Not there yet: named snapshots. Not planned:
+a guest network without the root helper, x86 guests, macOS guests, a
+GUI.
 
 ## Documentation
 

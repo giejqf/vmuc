@@ -29,6 +29,7 @@ The decision records so far:
 | [0008](adr/0008-guest-kernel-smstop-only-when-needed.md) | The guest kernel issues SMSTOP only when something is on (patch 0003) |
 | [0009](adr/0009-duplicate-stopped-instances.md) | A stopped instance can be duplicated |
 | [0010](adr/0010-cli-contract-for-scripts-and-agents.md) | The CLI is a contract for scripts and agents |
+| [0011](adr/0011-no-user-space-nat.md) | No user-space NAT; the network is vmnet through the root helper |
 
 Contributors and coding agents: the working rules are in
 [AGENTS.md](../AGENTS.md).
