@@ -1,14 +1,16 @@
 # Homebrew formula for vmuc. Lives in the tap repository as
 # Formula/vmuc.rb; this copy is the source of truth. The release workflow
 # fills in the version and checksums with packaging/homebrew/render.sh
-# and attaches the result to the draft release.
+# and attaches the result to the draft release; the tap's CI builds the
+# bottles and adds the `bottle do` block (packaging/homebrew/README.md).
 class Vmuc < Formula
   desc "ARM Linux VMs on Apple silicon with host-returnable guest memory"
   homepage "https://github.com/giejqf/vmuc"
   url "https://github.com/giejqf/vmuc/archive/refs/tags/vVERSION.tar.gz"
   sha256 "SHA256_SOURCE"
   license "Apache-2.0"
-  head "https://github.com/giejqf/vmuc.git", branch: "main"
+  # No `head`: the guest kernel and agent below come from a release, and a
+  # build of main would pair new host code with an older agent.
 
   depends_on "rust" => :build
   depends_on arch: :arm64

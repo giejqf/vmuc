@@ -2,8 +2,9 @@ name: release
 
 # A tag vX.Y.Z builds every release asset, checks it, and only then opens
 # a draft release with all of them attached, so a release never points
-# at assets that do not exist yet. Publishing the draft and copying the
-# rendered formula into the tap stay manual.
+# at assets that do not exist yet. Publishing the draft and the tap's
+# pull request, whose CI builds the bottles, stay manual
+# (packaging/homebrew/README.md).
 #
 #   kernel  (Linux)  cross-build, QEMU boot test     -> vmuc-kernel-X.Y.Z-arm64.img
 #   agent   (Linux)  static musl build                -> vmuc-agent-X.Y.Z-aarch64-linux-musl

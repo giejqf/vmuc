@@ -42,7 +42,7 @@ instances, and nothing graphical beyond the terminal.
 | Allowed third-party crates | clap, clap_complete (shell completions, from clap's maintainers), serde/serde_yaml/serde_json, indexmap (ordered config maps), uuid (boot IDs), dirs (home and cache dirs), ratatui, crossterm, libc, thiserror, anyhow (CLI only), mio, flate2 (pure Rust), lzma-rs (pure Rust xz; C-based liblzma cannot cross-check for darwin without an SDK), sha2, hex, crc32fast, ureq (downloads; rustls on Linux, native-tls on macOS for the same SDK reason), tracing, `vm-fdt` (FDT writer), `virtio-bindings` (constants only), tempfile (dev only) | Non-VM concerns only |
 | Forbidden crates | Anything implementing a VMM, hypervisor bindings, virtqueues, virtio devices, a virtiofs/FUSE server, a TCP/IP stack, or wrapping vz/QEMU/libkrun | Requirement 4 read strictly, and the memory manager must own guest memory |
 | License | Apache-2.0 only; `NOTICE` carries attributions for code ported from ArcBox (MIT OR Apache-2.0) | Requirement |
-| Distribution | Homebrew formula in our own tap, ad-hoc codesign with `vmuc.entitlements` at install; kernel as a formula resource | Lima and QEMU prove it |
+| Distribution | Homebrew formula in our own tap, with bottles for macOS 15 and 26 that the tap's CI (`brew test-bot`) builds, signs ad-hoc with `vmuc.entitlements` and tests; kernel and agent as formula resources, inside the bottle | Lima and QEMU prove it; a bottle installs without Rust, LLVM or a build |
 | Suspend | `vmuc suspend` writes a running instance to its directory and ends the VMM; `vmuc start` resumes it with guest RAM mapped copy-on-write from the image; one suspended state per instance, resumed at most once (ADR 0007) | Programs survive and a suspended instance costs no memory; a restore takes ~40 ms (E5) |
 | Duplicate | `vmuc duplicate SOURCE NEW` copies a stopped instance: its configuration (without a pinned MAC), its disk cloned copy-on-write, and a new machine ID on the copy's first boot; `vmuc resume` names `start` for a suspended instance (ADR 0009) | A second machine like one already provisioned, in under a second and no space until the disks diverge |
 | Out of scope for v0.1 | Containers runtime, Kubernetes, macOS guests, snapshots beyond suspend and duplicate (named snapshots, clones of running instances, migration), DAX by default, Intel Macs, Linux hosts, GUI | Scope control; templates can install Docker inside the guest |
@@ -56,7 +56,7 @@ vmuc/
   LICENSE                    Apache-2.0
   NOTICE                     attributions
   vmuc.entitlements          com.apple.security.hypervisor + network
-  Makefile                   check / test / mac-test / kernel / e2e / bottle
+  Makefile                   check / test / mac-test / kernel / e2e / bench
   crates/
     vmuc-hv/                 Hypervisor.framework FFI + safe wrappers (vm, vcpu, exit decode, gic)
     vmuc-vmm/                guest memory + memory manager, vcpu threads, exit dispatch,
